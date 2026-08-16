@@ -3,7 +3,7 @@
   ********************************************************************************************************
   Author: HACK Lab                                                                                     
   YouTube ID: HACK Lab, welcome to subscribe: https://www.youtube.com/channel/UCxFY1FcIYK9d7riTvIh6eiA                                                          
-  Version 2.0 
+  Version 2.1 
   HACK_CLOCK is a free download and may be used, modified, evaluated and
   distributed without charge provided the user adheres to version three of the GNU
   General Public License (GPL) and does not remove the copyright notice or this
@@ -11,7 +11,7 @@
   Author: HACK Lab                                                                                        
   Bilibili ID: HACK Lab  welcome to subscribe: https://space.bilibili.com/395145107                                                                             
   WeChat Official Account: HACK Lab, the only release point for open-source resources, regularly sharing open-source hardware and valuable technical articles, welcome to follow.                        
-  Version 2.0                                                                                           
+  Version 2.1                                                                                           
   HACK_CLOCK is a fully open-source hardware project, free to download and use, subject to the GPL V3 open-source license, the license text is available on the gnu.org website.    
 *********************************************************************************************************/
 
@@ -344,7 +344,7 @@ bool autoConfig()
 {
     WiFi.setAutoConnect(false);
     WiFi.setAutoReconnect(true);
-    WiFi.setSleepMode(WIFI_NONE_SLEEP);   // keep the radio awake so large HTTP responses aren't dropped on wake
+    WiFi.setSleepMode(WIFI_MODEM_SLEEP);   // modem sleep to save power; lwIP keeps the link alive
 
     if (strlen(settings.ssid) > 0)
     {
@@ -590,34 +590,105 @@ String jsonEsc(const char* s)   // escape special chars so saved values can't br
     return out;
 }
 //**************************************************************************************************
+void sendChunked(int code, const char* contentType, const String& body)
+    // ESP8266 lwIP can silently drop a TCP segment when a response is handed to the socket as one
+    // large write() and never retransmit it -- which is why the settings page used to need several
+    // reloads to fully load. Sending the same bytes as a series of small, explicit sendContent()
+    // calls (each well under one TCP segment) with a yield() between them avoids that failure mode,
+    // regardless of how long the page or the stored settings values happen to be.
+{
+    const size_t CHUNK = 512;
+    server.setContentLength(body.length());
+    server.send(code, contentType, "");
+    size_t sentLen = 0;
+    while (sentLen < body.length())
+    {
+        size_t n = min(CHUNK, body.length() - sentLen);
+        server.sendContent(body.substring(sentLen, sentLen + n));
+        sentLen += n;
+        yield();
+    }
+}
+//**************************************************************************************************
 void handleRoot()
 {
-    // The settings UI is split into two single-segment HTTP responses: this shell page and the
-    // /v values JSON it fetches. ESP8266 lwIP loses TX segments after the first (~1460B) and
-    // never retransmits, so any multi-segment response truncates ~50% of the time; keeping every
-    // response inside one TCP segment makes serving 100% reliable.
-    String html = "<!DOCTYPE html><html><head><meta charset=utf-8><title>MatrixClock</title><style>"
-        "body{font-family:Arial;background:#141414;color:#eee;padding:16px}"
-        "h1{color:#0f0;font-size:20px;text-align:center}"
-        "form{background:#161616;border:1px solid #2a2a2a;border-radius:10px;padding:12px;max-width:400px;margin:0 auto}"
-        "label{display:block;margin-top:8px;font-size:11px;color:#0f0;text-transform:uppercase;letter-spacing:.5px}"
-        "input,select{width:100%;padding:7px;margin-top:3px;box-sizing:border-box;color:#eee;background:#0f0f0f;border:1px solid #333;border-radius:6px;outline:none}"
-        "input:focus,select:focus{border-color:#0f0}"
-        "button{width:100%;padding:12px;margin-top:14px;background:linear-gradient(180deg,#0c0,#080);color:#fff;border:none;border-radius:8px}"
+    // Cosmetic + mobile-optimized settings page. The transport now goes through sendChunked()
+    // (see above), so this page is no longer squeezed under a single-TCP-segment byte budget --
+    // it can be as nicely styled as we want without reintroducing the old reload bug.
+    String html = "<!DOCTYPE html><html><head>"
+        "<meta charset=utf-8>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        "<meta name=theme-color content='#0a0d0b'>"
+        "<title>MatrixClock</title>"
+        "<style>"
+        ":root{--bg:#0a0d0b;--panel:#121614;--panel2:#171c19;--line:#232a26;--accent:#22e07a;--accentd:#1a9c58;--text:#e8f0ec;--sub:#7c8c84}"
+        "*{box-sizing:border-box}"
+        "html,body{margin:0}"
+        "body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;-webkit-tap-highlight-color:transparent}"
+        ".wrap{max-width:480px;margin:0 auto;padding:20px 16px 8px}"
+        "h1{font-size:19px;text-align:center;margin:4px 0 20px;color:var(--accent);letter-spacing:.5px;text-shadow:0 0 16px rgba(34,224,122,.35)}"
+        "fieldset{border:1px solid var(--line);border-radius:14px;background:var(--panel);padding:2px 14px 4px;margin:0 0 16px}"
+        "legend{padding:0 8px;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--accentd)}"
+        ".row{display:block;padding:10px 0;border-bottom:1px solid var(--line)}"
+        ".row:last-child{border-bottom:none}"
+        ".row>span{display:block;font-size:12.5px;color:var(--sub);margin-bottom:6px}"
+        "input[type=text],input[type=password],input[type=number],select{width:100%;padding:11px 12px;font-size:16px;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:9px;outline:none}"
+        "input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(34,224,122,.15)}"
+        ".pwrap{position:relative}"
+        ".pwrap input{padding-right:52px}"
+        ".pwrap button{position:absolute;right:4px;top:4px;bottom:4px;width:44px;background:none;border:none;color:var(--sub);font-size:11px;text-transform:uppercase;letter-spacing:.05em}"
+        ".row>.toggle{display:flex;align-items:center;justify-content:space-between;padding:2px 0}"
+        ".toggle .k{font-size:13.5px;color:var(--text)}"
+        ".sw{position:relative;width:46px;height:27px;flex:none;display:inline-block}"
+        ".sw input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer}"
+        ".sw i{position:absolute;inset:0;background:#2b332e;border-radius:27px;transition:.15s;pointer-events:none}"
+        ".sw i:before{content:'';position:absolute;width:21px;height:21px;left:3px;top:3px;background:#e8f0ec;border-radius:50%;transition:.15s}"
+        ".sw input:checked+i{background:var(--accentd)}"
+        ".sw input:checked+i:before{transform:translateX(19px);background:#fff}"
+        ".savebar{position:sticky;bottom:0;padding:14px 0 calc(14px + env(safe-area-inset-bottom));background:linear-gradient(180deg,transparent,var(--bg) 35%)}"
+        "button#sb{width:100%;padding:15px;font-size:15.5px;font-weight:600;background:var(--accent);color:#04150b;border:none;border-radius:12px;box-shadow:0 4px 18px rgba(34,224,122,.3)}"
+        "button#sb:active{transform:scale(.98)}"
+        "button#sb.busy{opacity:.6}"
+        ".hint{font-size:12.5px;color:var(--sub);text-align:center;padding:16px 0}"
         "</style></head><body>"
-        "<h1>MatrixClock Settings</h1>"
-        "<form id=f method=POST action=/save></form>"
+        "<div class=wrap>"
+        "<h1>&#9201; MatrixClock Settings</h1>"
+        "<form id=f method=POST action=/save>"
+        "<div id=fields><p class=hint>Loading settings...</p></div>"
+        "<div class=savebar><button type=submit id=sb>Save Settings</button></div>"
+        "</form>"
+        "</div>"
         "<script>"
-        "function E(s){return s.replace(/&/g,'&amp;').replace(/\"/g,'&quot;').replace(/</g,'&lt;');}"
-        "fetch('/v').then(r=>r.json()).then(d=>{var h='',i,x,k;"
-        "for(i=0;i<d.f.length;i++){x=d.f[i];"
-        "if(x[2]){h+='<label>'+x[0]+'<select name=\"'+x[1]+'\">';"
-        "for(k=0;k<x[2].length;k++){h+='<option value=\"'+x[2][k][0]+'\"'+(x[2][k][0]==x[3]?' selected':'')+'>'+E(x[2][k][1])+'</option>';}"
-        "h+='</select></label>';}"
-        "else{h+='<label>'+E(x[0])+'<input name=\"'+x[1]+'\" value=\"'+E(x[3])+'\"></label>';}}"
-        "document.getElementById('f').innerHTML=h+'<button type=submit>Save</button>';});"
+        "function E(s){return String(s).replace(/&/g,'&amp;').replace(/\"/g,'&quot;').replace(/</g,'&lt;');}"
+        "var GROUPS=[['Network',['ssid','pass','ntp']],['Time &amp; Sync',['tz','dst','resync','resyncHour','resyncMin','ntpInterval']],['Display',['bright','orient','colonAnim']],['Date Scroll',['scrollDate','scrollDateInt','scrollDir']],['Weather',['weather','weatherCity','weatherInterval','weatherSpeed','rainWarn','rainThresh','heatWarn','heatThresh']]];"
+        "var BOUNDS={bright:[0,15],scrollDateInt:[1,120],resyncHour:[0,23],resyncMin:[0,59],ntpInterval:[0,720],weatherInterval:[1,240],rainThresh:[1,25],heatThresh:[20,50]};"
+        "function isToggle(x){var o=x[2];return o&&o.length==2&&o[0][0]=='0'&&o[0][1]=='Off'&&o[1][0]=='1'&&o[1][1]=='On';}"
+        "function field(x){"
+        "if(isToggle(x)){return '<label class=row><span class=toggle><span class=k>'+E(x[0])+'</span><span class=sw><input type=checkbox name=\"'+x[1]+'\" value=1'+(x[3]=='1'?' checked':'')+'><i></i></span></span></label>';}"
+        "if(x[2]){var h='<div class=row><span>'+E(x[0])+'</span><select name=\"'+x[1]+'\">';"
+        "for(var k=0;k<x[2].length;k++)h+='<option value=\"'+x[2][k][0]+'\"'+(x[2][k][0]==x[3]?' selected':'')+'>'+E(x[2][k][1])+'</option>';"
+        "return h+'</select></div>';}"
+        "if(x[1]=='pass'){return '<div class=row><span>'+E(x[0])+'</span><div class=pwrap><input type=password id=pw name=\"'+x[1]+'\" value=\"'+E(x[3])+'\" autocomplete=new-password autocapitalize=off spellcheck=false><button type=button id=pwt>Show</button></div></div>';}"
+        "var b=BOUNDS[x[1]],extra;"
+        "if(b)extra=' type=number inputmode=numeric min='+b[0]+' max='+b[1];"
+        "else if(x[1]=='tz')extra=' type=number inputmode=numeric';"
+        "else extra=' type=text autocomplete=off autocapitalize=off spellcheck=false';"
+        "return '<div class=row><span>'+E(x[0])+'</span><input name=\"'+x[1]+'\" value=\"'+E(x[3])+'\"'+extra+'></div>';"
+        "}"
+        "fetch('/v').then(function(r){return r.json();}).then(function(d){"
+        "var used={};GROUPS.forEach(function(g){g[1].forEach(function(k){used[k]=1;});});"
+        "var byKey={};d.f.forEach(function(x){byKey[x[1]]=x;});"
+        "var html='';"
+        "GROUPS.forEach(function(g){var rows='';g[1].forEach(function(k){if(byKey[k])rows+=field(byKey[k]);});if(rows)html+='<fieldset><legend>'+g[0]+'</legend>'+rows+'</fieldset>';});"
+        "var other='';d.f.forEach(function(x){if(!used[x[1]])other+=field(x);});"
+        "if(other)html+='<fieldset><legend>Other</legend>'+other+'</fieldset>';"
+        "document.getElementById('fields').innerHTML=html;"
+        "var pwt=document.getElementById('pwt');"
+        "if(pwt)pwt.onclick=function(){var p=document.getElementById('pw');if(p.type=='password'){p.type='text';pwt.textContent='Hide';}else{p.type='password';pwt.textContent='Show';}};"
+        "}).catch(function(){document.getElementById('fields').innerHTML='<p class=hint>Could not load settings -- pull to refresh.</p>';});"
+        "document.getElementById('f').addEventListener('submit',function(){var b=document.getElementById('sb');b.classList.add('busy');b.textContent='Saving...';});"
         "</script></body></html>";
-    server.send(200, "text/html", html);
+    sendChunked(200, "text/html", html);
 }
 //**************************************************************************************************
 void handleValues()
@@ -632,7 +703,7 @@ void handleValues()
     j += "[\"Orientation\",\"orient\",[[\"0\",\"Auto\"],[\"1\",\"Norm\"],[\"2\",\"Flip\"]],\"" + String(settings.orient) + "\"],";
     j += "[\"Scroll Date\",\"scrollDate\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.scrollDate) + "\"],";
     j += "[\"Date Interval (min)\",\"scrollDateInt\",null,\"" + String(settings.scrollDateInt) + "\"],";
-    j += "[\"Scroll Direction\",\"scrollDir\",[[\"0\",\"Up-Down\"],[\"1\",\"Down-Up\"]],\"" + String(settings.scrollDir) + "\"],";
+    j += "[\"Seconds Scroll Direction\",\"scrollDir\",[[\"0\",\"Up-Down\"],[\"1\",\"Down-Up\"]],\"" + String(settings.scrollDir) + "\"],";
     j += "[\"Colon Animation\",\"colonAnim\",[[\"0\",\"Solid\"],[\"1\",\"Blink\"],[\"2\",\"Slow\"],[\"3\",\"Dbl\"],[\"4\",\"Alt\"]],\"" + String(settings.colonAnim) + "\"],";
     j += "[\"NTP Resync\",\"resync\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.resync) + "\"],";
     j += "[\"Resync Hour\",\"resyncHour\",null,\"" + String(settings.resyncHour) + "\"],";
@@ -647,7 +718,7 @@ void handleValues()
     j += "[\"Heat Warning\",\"heatWarn\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.heatWarn) + "\"],";
     j += "[\"Heat Threshold (°C, default 35)\",\"heatThresh\",null,\"" + String(settings.heatThresh) + "\"]";
     j += "]}";
-    server.send(200, "application/json", j);
+    sendChunked(200, "application/json", j);
 }
 //**************************************************************************************************
 void handleSave()
@@ -683,7 +754,18 @@ void handleSave()
     settings.dstRule = (uint8_t) constrain(server.arg("dst").toInt(), 0, 3);
     settings_save();
     Serial.printf("Settings saved, SSID:%s PSW:%s\r\n", settings.ssid, settings.pass);
-    server.send(200, "text/html", "<!DOCTYPE html><html><head><meta charset=utf-8><meta http-equiv=\"refresh\" content=\"15; url=/\"><title>Saved</title><style>body{font-family:Arial;background:#141414;color:#eee;text-align:center;padding:60px 20px}h2{color:#0f0;font-size:22px;text-shadow:0 0 10px rgba(0,255,0,.35)}p{color:#999}</style></head><body><h2>Settings saved</h2><p>Restarting the clock in a few seconds...</p></body></html>");
+    sendChunked(200, "text/html", "<!DOCTYPE html><html><head><meta charset=utf-8>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        "<meta name=theme-color content='#0a0d0b'>"
+        "<meta http-equiv=\"refresh\" content=\"15; url=/\"><title>Saved</title><style>"
+        "body{margin:0;background:#0a0d0b;color:#e8f0ec;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;text-align:center;padding:72px 24px;min-height:100vh;box-sizing:border-box}"
+        ".ok{font-size:44px;color:#22e07a;text-shadow:0 0 20px rgba(34,224,122,.45)}"
+        "h2{color:#22e07a;font-size:20px;margin:14px 0 6px}"
+        "p{color:#7c8c84;font-size:14px}"
+        "</style></head><body>"
+        "<div class=ok>&#10003;</div>"
+        "<h2>Settings saved</h2><p>Restarting the clock in a few seconds...</p>"
+        "</body></html>");
     delay(500);
     ESP.restart();
 }
@@ -1292,7 +1374,7 @@ void setup() {
     //////////////////////////////////
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(true);     // auto reconnect if the AP drops the link
-    WiFi.setSleep(false);            // disable modem sleep for a stable connection
+    WiFi.setSleep(true);             // enable modem sleep to save power
     if (!autoConfig())// if WiFi can't be configured, enter smart config mode
     {
        if (strlen(settings.ssid) > 0)
