@@ -915,6 +915,14 @@ bool dst_is_active(int y, int m, int d, int h, uint8_t rule)   // h = hour of th
     return now >= start && now < end;
 }
 //**************************************************************************************************
+uint64_t ntpTimestampMs(const byte* p)
+    // parse an 8-byte NTP timestamp (32-bit seconds + 32-bit fraction) into milliseconds since 1900
+{
+    uint64_t secs = ((uint64_t)p[0] << 24) | ((uint64_t)p[1] << 16) | ((uint64_t)p[2] << 8) | p[3];
+    uint64_t frac = ((uint64_t)p[4] << 24) | ((uint64_t)p[5] << 16) | ((uint64_t)p[6] << 8) | p[7];
+    return secs * 1000ULL + (frac * 1000ULL >> 32);
+}
+//**************************************************************************************************
 tm* connectNTP() { // if response from NTP was successful return *tm else return a null pointer
     WiFi.hostByName(settings.ntpServer, timeServerIP);
     Serial.println(timeServerIP);
@@ -936,19 +944,22 @@ tm* connectNTP() { // if response from NTP was successful return *tm else return
     // you can send a packet requesting a timestamp:
     udp.beginPacket(timeServerIP, 123); //NTP requests are to port 123
     udp.write(packetBuffer, NTP_PACKET_SIZE);
+    unsigned long t1 = millis();        // client send time
     udp.endPacket();
     delay(1000);                 // wait to see if a reply is available
     int cb = udp.parsePacket();
     udp.read(packetBuffer, NTP_PACKET_SIZE); // read the packet into the buffer
-    //the timestamp starts at byte 40 of the received packet and is four bytes,
-    // or two words, long. First, extract the two words:
-    unsigned long highWord = word(packetBuffer[40], packetBuffer[41]);
-    unsigned long lowWord = word(packetBuffer[42], packetBuffer[43]);
-    // combine the four bytes (two words) into a long integer
-    // this is NTP time (seconds since Jan 1 1900):
-    unsigned long secsSince1900 = highWord << 16 | lowWord;
-    // now convert NTP time into everyday time:
+    unsigned long t4 = millis();        // client receive time
+    // parse the server timestamps: T2 = server receive time (bytes 32-39), T3 = server transmit time (bytes 40-47)
+    uint64_t t2 = ntpTimestampMs(packetBuffer + 32);
+    uint64_t t3 = ntpTimestampMs(packetBuffer + 40);
+    // round-trip time in real ms = client elapsed time minus the server's own processing time
+    unsigned long rtt = (unsigned long)(t4 - t1) - (t3 > t2 ? (unsigned long)(t3 - t2) : 0);
+    unsigned long transit = rtt / 2;    // one-way network delay (assumes symmetric paths)
+    // true server time when the reply arrived, rounded to the nearest second
     const unsigned long seventyYears = 2208988800UL;
+    unsigned long secsSince1900 = (unsigned long)((t3 + transit + 500) / 1000);
+    // now convert NTP time into everyday time:
     // subtract seventy years:
     int dstOffsetSec = 0;
     if (settings.dstRule > 0)
@@ -959,8 +970,9 @@ tm* connectNTP() { // if response from NTP was successful return *tm else return
             dstOffsetSec = 3600;
         Serial.printf("DST rule:%d active:%s\r\n", settings.dstRule, dstOffsetSec ? "yes" : "no");
     }
-    epoch = secsSince1900 - seventyYears + 3600 * settings.tzOffset + dstOffsetSec + 2; // +2000ms processing time
+    epoch = secsSince1900 - seventyYears + 3600 * settings.tzOffset + dstOffsetSec; // RTT-corrected, no fixed offset
     //epoch=epoch-3600*6; // difference -6h = -6* 3600 sec)
+    Serial.printf("NTP RTT:%lums transit:%lums offset:%lds\r\n", rtt, transit, (long)epoch - (long)(secsSince1900 - seventyYears));
     time_t t;
     t = epoch;
     tm* tt;
