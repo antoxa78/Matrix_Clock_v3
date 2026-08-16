@@ -82,6 +82,7 @@ bool msgPending = false;                             // message queued, starts w
 char msgPendingText[80] = "";
 uint8_t msgStep = 2;                                 // current message scroll speed (px per 50ms tick)
 uint8_t msgPendingStep = 2;                          // scroll speed of the queued message
+unsigned long apMsgUntil = 0;                        // AP-mode message keeps repeating until this time
 bool f_tckr1s = false;
 bool f_tckr50ms = false;
 bool kk;
@@ -526,12 +527,17 @@ void settings_load()
 //***************************Web Settings Page**********************************************************************
 ESP8266WebServer server(80);
 //**************************************************************************************************
+void startMsg(const char* text, uint8_t step = 2);   // forward decl, defined below
 void startAP()   // start fallback AP so the settings page stays reachable without router WiFi
 {
     if (apActive) return;
     WiFi.mode(WIFI_AP_STA);
     WiFi.softAP("MatrixClock-Setup", "12345678");
+    WiFi.setAutoReconnect(false);   // stop the SDK's background retry loop
+    WiFi.disconnect();              // quit the ongoing STA reconnect storm so the softAP gets the radio
     apActive = true;
+    apMsgUntil = millis() + 30000UL;   // keep showing the setup hint for 30 seconds
+    startMsg("SETUP MODE AP 192.168.4.1");
     Serial.println("AP started: MatrixClock-Setup / password 12345678 / http://192.168.4.1");
 }
 //**************************************************************************************************
@@ -540,11 +546,12 @@ void stopAP()    // stop fallback AP once the router connection works again
     if (!apActive) return;
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true);    // normal reconnect behavior once the router is back
     apActive = false;
     Serial.println("AP stopped");
 }
 //**************************************************************************************************
-void startMsg(const char* text, uint8_t step = 2)   // scroll a message across the display; step = px per 50ms tick; queues if busy
+void startMsg(const char* text, uint8_t step)   // scroll a message across the display; step = px per 50ms tick; queues if busy
 {
     if (showMsg)
     {
@@ -1415,16 +1422,19 @@ void setup() {
     Serial.println("Web server started");
     ///////////////////////////////////
     tm* tt;
-    tt = connectNTP();// get network time
-    if (tt != NULL)   // if network time was received, write it to the RTC
+    if (WiFi.status() == WL_CONNECTED)   // only sync when connected; in AP mode there is no router to reach
     {
-        rtc_set(tt);
-        msgPending = true;      // show "NTP TIME SYNC OK!" after the boot/daily-resync time sync
-        strncpy(msgPendingText, "NTP TIME SYNC OK!", sizeof(msgPendingText) - 1);
-        msgPendingText[sizeof(msgPendingText) - 1] = 0;
+        tt = connectNTP();// get network time
+        if (tt != NULL)   // if network time was received, write it to the RTC
+        {
+            rtc_set(tt);
+            msgPending = true;      // show "NTP TIME SYNC OK!" after the boot/daily-resync time sync
+            strncpy(msgPendingText, "NTP TIME SYNC OK!", sizeof(msgPendingText) - 1);
+            msgPendingText[sizeof(msgPendingText) - 1] = 0;
+        }
+        else
+            Serial.println("no time packet received");
     }
-    else
-        Serial.println("no time packet received");
 }
 //**************************************************************************************************
 // The loop function is called in an endless loop
@@ -1460,7 +1470,7 @@ void loop() {
         server.handleClient();   // handle web settings page requests
         static bool wifiReconnectNotify = false;   // set by the 50ms tick when WiFi comes up
         static bool ntpSyncRequested = false;      // set on a genuine reconnect (not the boot connect)
-        if (rtcInitialized && settings.resync)   // daily RTC/NTP resync: sync directly and show the status
+        if (rtcInitialized && settings.resync && WiFi.status() == WL_CONNECTED)   // daily RTC/NTP resync: sync directly and show the status
         {
             static bool resyncRan = false;
             if (!(MEZ.std12 == settings.resyncHour && MEZ.min12 == settings.resyncMin))
@@ -1553,7 +1563,7 @@ void loop() {
                 wifiReconnectNotify = false;
                 Serial.println("WiFi connected");
                 Serial.println(WiFi.localIP());
-                if (ntpSyncRequested)   // genuine reconnection -> show success + resync RTC once (boot already synced in setup, boot "OK!!" shown by autoConfig)
+                if (ntpSyncRequested || apActive)   // genuine reconnection, or leaving AP mode -> resync the RTC once
                 {
                     startMsg("WI-FI OK");
                     ntpSyncArm = true;
@@ -1583,6 +1593,8 @@ void loop() {
                     Serial.println("WiFi reconnect failed, will retry later");
                     reconnectActive = false;
                     wifiCheckCnt = 0;
+                    if (apActive)
+                        WiFi.disconnect();   // stop this probe's retry loop so the fallback AP stays responsive
                 }
             }
 
@@ -1697,6 +1709,8 @@ void loop() {
                     z_PosX = maxPosX;
                     d_PosX = -8;
                     showMsg = false;
+                    if (apActive && millis() < apMsgUntil)   // keep repeating the AP setup hint for 30 seconds
+                        startMsg("SETUP MODE AP 192.168.4.1");
                 }
             }
             else if (msgPending) {
