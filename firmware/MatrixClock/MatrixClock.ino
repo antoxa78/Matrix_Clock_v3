@@ -3,7 +3,7 @@
   ********************************************************************************************************
   Author: HACK Lab                                                                                     
   YouTube ID: HACK Lab, welcome to subscribe: https://www.youtube.com/channel/UCxFY1FcIYK9d7riTvIh6eiA                                                          
-  Version 2.1 
+  Version 2.2 
   HACK_CLOCK is a free download and may be used, modified, evaluated and
   distributed without charge provided the user adheres to version three of the GNU
   General Public License (GPL) and does not remove the copyright notice or this
@@ -11,7 +11,7 @@
   Author: HACK Lab                                                                                        
   Bilibili ID: HACK Lab  welcome to subscribe: https://space.bilibili.com/395145107                                                                             
   WeChat Official Account: HACK Lab, the only release point for open-source resources, regularly sharing open-source hardware and valuable technical articles, welcome to follow.                        
-  Version 2.1                                                                                           
+  Version 2.2                                                                                           
   HACK_CLOCK is a fully open-source hardware project, free to download and use, subject to the GPL V3 open-source license, the license text is available on the gnu.org website.    
 *********************************************************************************************************/
 
@@ -91,8 +91,6 @@ unsigned int localPort = 2390;                      // local port to listen for 
 const int NTP_PACKET_SIZE = 48;                     // NTP time stamp is in the first 48 bytes of the message
 byte packetBuffer[NTP_PACKET_SIZE];                 // buffer to hold incoming and outgoing packets
 IPAddress timeServerIP;                            
-tm *tt, ttm;
-
 
 const unsigned char DS3231_ADDRESS = 0x68;
 const unsigned char secondREG = 0x00;
@@ -341,6 +339,11 @@ unsigned short const font2[96][9] = { { 0x07, 0x00, 0x00, 0x00, 0x00, 0x00,
         { 0x07, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x00 }    // 0x7f, DEL
 };
 //************************Auto Connect**************************************************************************
+const char* passHidden(const char* pass)   // never log the WiFi password in clear text
+{
+    return (pass && pass[0]) ? "(hidden)" : "";
+}
+//**************************************************************************************************
 bool autoConfig()
 {
     WiFi.setAutoConnect(false);
@@ -350,7 +353,7 @@ bool autoConfig()
     if (strlen(settings.ssid) > 0)
     {
         WiFi.persistent(false);   // settings are the source of truth, don't touch flash config
-        Serial.printf("Connecting to SSID:%s PSW:%s\r\n", settings.ssid, settings.pass);
+        Serial.printf("Connecting to SSID:%s PSW:%s\r\n", settings.ssid, passHidden(settings.pass));
         Serial.println("Scanning networks...");
         int n = WiFi.scanNetworks();
         Serial.printf("Found %d networks\r\n", n);
@@ -389,7 +392,7 @@ bool autoConfig()
        {
           Serial.println("AutoConfig Success");
           Serial.printf("SSID:%s\r\n", WiFi.SSID().c_str());
-          Serial.printf("PSW:%s\r\n", WiFi.psk().c_str());
+           Serial.printf("PSW:%s\r\n", passHidden(WiFi.psk().c_str()));
           clear_Display();
           char2Arr('O', 25, 0);
           char2Arr('K', 19, 0);
@@ -442,7 +445,7 @@ void smartConfig()
           refresh_display(); 
           Serial.println("SmartConfig Success");
           Serial.printf("SSID:%s\r\n", WiFi.SSID().c_str());
-          Serial.printf("PSW:%s\r\n", WiFi.psk().c_str());
+           Serial.printf("PSW:%s\r\n", passHidden(WiFi.psk().c_str()));
           WiFi.setAutoConnect(true);  // enable auto connect
           
           Serial.println("WiFi connected");
@@ -736,7 +739,7 @@ void handleSave()
     settings.pass[sizeof(settings.pass) - 1] = '\0';
     strncpy(settings.ntpServer, server.arg("ntp").c_str(), sizeof(settings.ntpServer) - 1);
     settings.ntpServer[sizeof(settings.ntpServer) - 1] = '\0';
-    settings.tzOffset = (int8_t) server.arg("tz").toInt();
+    settings.tzOffset = (int8_t) constrain(server.arg("tz").toInt(), -12, 14);
     settings.brightness = (uint8_t) constrain(server.arg("bright").toInt(), 0, 15);
     settings.orient = (uint8_t) constrain(server.arg("orient").toInt(), 0, 2);
     settings.scrollDate = (uint8_t) (server.arg("scrollDate").toInt() ? 1 : 0);
@@ -760,7 +763,7 @@ void handleSave()
     settings.heatThresh = (uint8_t) constrain(server.arg("heatThresh").toInt(), 20, 50);
     settings.dstRule = (uint8_t) constrain(server.arg("dst").toInt(), 0, 3);
     settings_save();
-    Serial.printf("Settings saved, SSID:%s PSW:%s\r\n", settings.ssid, settings.pass);
+    Serial.printf("Settings saved, SSID:%s PSW:%s\r\n", settings.ssid, passHidden(settings.pass));
     sendChunked(200, "text/html", "<!DOCTYPE html><html><head><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
         "<meta name=theme-color content='#0a0d0b'>"
@@ -773,7 +776,8 @@ void handleSave()
         "<div class=ok>&#10003;</div>"
         "<h2>Settings saved</h2><p>Restarting the clock in a few seconds...</p>"
         "</body></html>");
-    delay(500);
+    server.client().stop();   // close TCP cleanly so the browser gets the full response
+    delay(2000);
     ESP.restart();
 }
 //**************************************************************************************************
@@ -953,15 +957,37 @@ tm* connectNTP() { // if response from NTP was successful return *tm else return
     udp.write(packetBuffer, NTP_PACKET_SIZE);
     unsigned long t1 = millis();        // client send time
     udp.endPacket();
-    delay(1000);                 // wait to see if a reply is available
-    int cb = udp.parsePacket();
-    udp.read(packetBuffer, NTP_PACKET_SIZE); // read the packet into the buffer
+    int cb = 0;
+    while (millis() - t1 < 3000UL)      // wait up to 3s for a reply, keep the web server responsive while waiting
+    {
+        yield();
+        server.handleClient();
+        cb = udp.parsePacket();
+        if (cb > 0) break;
+    }
     unsigned long t4 = millis();        // client receive time
+    if (cb < 48) {
+        Serial.printf("NTP: expected at least 48 bytes, got %d\r\n", cb);
+        return NULL;
+    }
+    udp.read(packetBuffer, NTP_PACKET_SIZE); // read the packet into the buffer
+    // validate the reply: LI=3 = server not synchronized, stratum 0 = Kiss-o'-Death, version 1-4
+    uint8_t li = (packetBuffer[0] >> 6) & 0x03;
+    uint8_t version = (packetBuffer[0] >> 3) & 0x07;
+    uint8_t stratum = packetBuffer[1];
+    if (li == 3 || version < 1 || version > 4 || stratum == 0) {
+        Serial.printf("NTP: invalid reply LI=%d version=%d stratum=%d\r\n", li, version, stratum);
+        return NULL;
+    }
+    if (li != 0)   // LI=1/2 announce a pending leap second, the time is still valid
+        Serial.printf("NTP: leap second announced (LI=%d)\r\n", li);
     // parse the server timestamps: T2 = server receive time (bytes 32-39), T3 = server transmit time (bytes 40-47)
     uint64_t t2 = ntpTimestampMs(packetBuffer + 32);
     uint64_t t3 = ntpTimestampMs(packetBuffer + 40);
     // round-trip time in real ms = client elapsed time minus the server's own processing time
-    unsigned long rtt = (unsigned long)(t4 - t1) - (t3 > t2 ? (unsigned long)(t3 - t2) : 0);
+    unsigned long elapsed = (unsigned long)(t4 - t1);
+    unsigned long serverProc = (t3 > t2) ? (unsigned long)(t3 - t2) : 0;
+    unsigned long rtt = (serverProc < elapsed) ? (elapsed - serverProc) : elapsed;
     unsigned long transit = rtt / 2;    // one-way network delay (assumes symmetric paths)
     // true server time when the reply arrived, rounded to the nearest second
     const unsigned long seventyYears = 2208988800UL;
@@ -985,11 +1011,8 @@ tm* connectNTP() { // if response from NTP was successful return *tm else return
     tm* tt;
     tt = localtime(&t);
     Serial.println(epoch);
-    Serial.println(asctime(tt)); 
-    if (cb == 48)
-        return (tt);
-    else
-        return (NULL);
+    Serial.println(asctime(tt));
+    return tt;
 }
 //**************************************************************************************************
 void rtc_init(unsigned char sda, unsigned char scl) {
@@ -1112,13 +1135,15 @@ void rtc2mez() {
     if (Jahr > 99)
         Jahr = 0;
     Monat = rtc_monat();//month
-    if (Monat > 12)
-        Monat = 0;
+    if (Monat < 1 || Monat > 12)
+        Monat = 1;
     Tag = rtc_tag();//day
-    if (Tag > 31)
-        Tag = 0;
+    if (Tag < 1 || Tag > 31)
+        Tag = 1;
     WoTag = rtc_wochentag();
     if (WoTag == 7)
+        WoTag = 0;
+    if (WoTag > 6)
         WoTag = 0;
     Stunde = rtc_stunde();//hour
     if (Stunde > 23)
@@ -1376,12 +1401,12 @@ void timer50ms() {
 //The setup function is called once at startup of the sketch
 void setup() {
     // Add your initialization code here
-    pinMode(16, INPUT);
+    pinMode(16, INPUT_PULLDOWN_16);
     pinMode(CS, OUTPUT);
     digitalWrite(CS, HIGH);
     Serial.begin(115200);
     settings_load();              // load saved settings from EEPROM
-    Serial.printf("Settings loaded: SSID:%s PSW:%s NTP:%s TZ:%d BR:%d ORIENT:%d DST:%d COLON:%d MARQ:%d PULSE:%d NTPINT:%d WEATHER:%d WCITY:%s WINT:%d WSPEED:%d SDINT:%d RWARN:%d HWARN:%d RTHR:%d HTHR:%d\r\n", settings.ssid, settings.pass, settings.ntpServer, settings.tzOffset, settings.brightness, settings.orient, settings.dstRule, settings.colonAnim, settings.marquee, settings.pulse, settings.ntpInterval, settings.weather, settings.weatherCity, settings.weatherInterval, settings.weatherSpeed, settings.scrollDateInt, settings.rainWarn, settings.heatWarn, settings.rainThresh, settings.heatThresh);
+    Serial.printf("Settings loaded: SSID:%s PSW:%s NTP:%s TZ:%d BR:%d ORIENT:%d DST:%d COLON:%d MARQ:%d PULSE:%d NTPINT:%d WEATHER:%d WCITY:%s WINT:%d WSPEED:%d SDINT:%d RWARN:%d HWARN:%d RTHR:%d HTHR:%d\r\n", settings.ssid, passHidden(settings.pass), settings.ntpServer, settings.tzOffset, settings.brightness, settings.orient, settings.dstRule, settings.colonAnim, settings.marquee, settings.pulse, settings.ntpInterval, settings.weather, settings.weatherCity, settings.weatherInterval, settings.weatherSpeed, settings.scrollDateInt, settings.rainWarn, settings.heatWarn, settings.rainThresh, settings.heatThresh);
     SPI.begin();
     helpArr_init();
     max7219_init();
@@ -1410,13 +1435,6 @@ void setup() {
     ///////////////////////////////////
     server.on("/", handleRoot);
     server.on("/v", HTTP_GET, handleValues);   // settings values JSON (single-segment response, like /)
-    server.on("/s", HTTP_GET, []() {   // TEMP: sweep test - serve n bytes of 'A' to find the reliable page-size cutoff
-        int n = constrain(server.arg("n").toInt(), 0, 3000);
-        String body;
-        body.reserve(n);
-        for (int i = 0; i < n; i++) body += 'A';
-        server.send(200, "text/plain", body);
-    });
     server.on("/save", HTTP_POST, handleSave);   // POST only: a later GET/refresh on /save must NOT re-run the save
     server.begin();
     Serial.println("Web server started");
