@@ -3,7 +3,7 @@
   ********************************************************************************************************
   Author: HACK Lab                                                                                     
   YouTube ID: HACK Lab, welcome to subscribe: https://www.youtube.com/channel/UCxFY1FcIYK9d7riTvIh6eiA                                                          
-  Version 2.2 
+  Version 2.3
   HACK_CLOCK is a free download and may be used, modified, evaluated and
   distributed without charge provided the user adheres to version three of the GNU
   General Public License (GPL) and does not remove the copyright notice or this
@@ -11,7 +11,7 @@
   Author: HACK Lab                                                                                        
   Bilibili ID: HACK Lab  welcome to subscribe: https://space.bilibili.com/395145107                                                                             
   WeChat Official Account: HACK Lab, the only release point for open-source resources, regularly sharing open-source hardware and valuable technical articles, welcome to follow.                        
-  Version 2.2                                                                                           
+  Version 2.3                                                                                           
   HACK_CLOCK is a fully open-source hardware project, free to download and use, subject to the GPL V3 open-source license, the license text is available on the gnu.org website.    
 *********************************************************************************************************/
 
@@ -31,6 +31,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
+#define FIRMWARE_VERSION "v2.3"   // shown on the settings page
 //#define REVERSE_HORIZONTAL
 //#define REVERSE_VERTICAL
 //***************************Web Settings Page**********************************************************************
@@ -603,19 +604,30 @@ String jsonEsc(const char* s)   // escape special chars so saved values can't br
 void sendChunked(int code, const char* contentType, const String& body)
     // ESP8266 lwIP can silently drop a TCP segment when a response is handed to the socket as one
     // large write() and never retransmit it -- which is why the settings page used to need several
-    // reloads to fully load. Sending the same bytes as a series of small, explicit sendContent()
-    // calls (each well under one TCP segment) with a yield() between them avoids that failure mode,
-    // regardless of how long the page or the stored settings values happen to be.
+    // reloads to fully load. Sending the same bytes as a series of small, explicit writes (each
+    // well under one TCP segment) with a yield() between them avoids that failure mode.
+    // The writes are zero-copy: they point straight into the existing body buffer. The previous
+    // version built a fresh substring() String per chunk, and when that allocation failed under
+    // heap fragmentation it silently sent nothing while the loop still advanced -- leaving holes
+    // in the middle of the page (the "settings page sometimes incomplete" bug).
 {
     const size_t CHUNK = 512;
-    server.setContentLength(body.length());
+    const char* p = body.c_str();
+    size_t total = body.length();
+    server.setContentLength(total);
     server.send(code, contentType, "");
     size_t sentLen = 0;
-    while (sentLen < body.length())
+    while (sentLen < total)
     {
-        size_t n = min(CHUNK, body.length() - sentLen);
-        server.sendContent(body.substring(sentLen, sentLen + n));
-        sentLen += n;
+        size_t n = min(CHUNK, total - sentLen);
+        size_t written = server.client().write(p + sentLen, n);
+        if (written == 0)   // socket stalled or gone: back off and retry the same bytes
+        {
+            if (!server.client().connected()) return;   // browser vanished, nothing more to send
+            delay(2);
+            continue;
+        }
+        sentLen += written;
         yield();
     }
 }
@@ -660,9 +672,11 @@ void handleRoot()
         "button#sb:active{transform:scale(.98)}"
         "button#sb.busy{opacity:.6}"
         ".hint{font-size:12.5px;color:var(--sub);text-align:center;padding:16px 0}"
+        ".ver{font-size:11.5px;color:var(--sub);text-align:center;margin:-14px 0 20px;letter-spacing:.04em}"
         "</style></head><body>"
         "<div class=wrap>"
         "<h1>&#9201; MatrixClock Settings</h1>"
+        "<div class=ver>Firmware " FIRMWARE_VERSION "</div>"
         "<form id=f method=POST action=/save>"
         "<div id=fields><p class=hint>Loading settings...</p></div>"
         "<div class=savebar><button type=submit id=sb>Save Settings</button></div>"
@@ -1446,8 +1460,8 @@ void setup() {
         if (tt != NULL)   // if network time was received, write it to the RTC
         {
             rtc_set(tt);
-            msgPending = true;      // show "NTP TIME SYNC OK!" after the boot/daily-resync time sync
-            strncpy(msgPendingText, "NTP TIME SYNC OK!", sizeof(msgPendingText) - 1);
+            msgPending = true;      // show "NTP Clock Sync. Successful." after the boot/daily-resync time sync
+            strncpy(msgPendingText, "NTP Clock Sync. Successful.", sizeof(msgPendingText) - 1);
             msgPendingText[sizeof(msgPendingText) - 1] = 0;
         }
         else
@@ -1501,7 +1515,7 @@ void loop() {
                 {
                     rtc_set(tt);
                     Serial.println("Daily resync OK");
-                    startMsg("NTP TIME SYNC OK!");
+                    startMsg("NTP Clock Sync. Successful.");
                 }
                 else
                 {
@@ -1527,7 +1541,7 @@ void loop() {
                 {
                     rtc_set(tt);
                     Serial.println("Periodic NTP sync OK");
-                    startMsg("NTP TIME SYNC OK!");
+                    startMsg("NTP Clock Sync. Successful.");
                 }
                 else
                 {
@@ -1583,7 +1597,7 @@ void loop() {
                 Serial.println(WiFi.localIP());
                 if (ntpSyncRequested || apActive)   // genuine reconnection, or leaving AP mode -> resync the RTC once
                 {
-                    startMsg("WI-FI OK");
+                    startMsg("Wi-Fi Connected");
                     ntpSyncArm = true;
                 }
             }
@@ -1616,7 +1630,7 @@ void loop() {
                 }
             }
 
-            if (ntpSyncArm)   // one tick delay so the "WI-FI OK" scroll is not blocked by connectNTP()
+            if (ntpSyncArm)   // one tick delay so the "Wi-Fi Connected" scroll is not blocked by connectNTP()
             {
                 ntpSyncArm = false;
                 ntpSyncPending = true;
@@ -1629,7 +1643,7 @@ void loop() {
                 {
                     rtc_set(tt);
                     Serial.println("RTC resynced after WiFi reconnect");
-                    startMsg("NTP TIME SYNC OK!");
+                    startMsg("NTP Clock Sync. Successful.");
                 }
                 else
                     Serial.println("no time packet received");
@@ -1703,18 +1717,29 @@ void loop() {
         } // end 1s
         if (f_tckr50ms == true) {// the following runs every 50ms to control scroll speed
             f_tckr50ms = false;
+            // Announce "Wi-Fi Connected" only when a link that had been stably up for a while
+            // drops and comes back. A fixed boot-time grace period is not enough: the link often
+            // settles with one extra drop/reconnect shortly after boot, which would otherwise be
+            // mistaken for a genuine reconnection and announce on every boot.
             static bool wifiPrevUp = false;
-            static bool wifiEverConnected = false;
+            static bool wifiStable = false;      // link continuously up for >= WIFI_STABLE_MS
+            static bool stableBeforeDrop = false;
+            static unsigned long upSinceMs = 0;
+            const unsigned long WIFI_STABLE_MS = 90000UL;
             bool wifiUp = (WiFi.status() == WL_CONNECTED);
-            if (wifiUp && !wifiPrevUp)   // WiFi came up (boot or after a drop)
+            if (wifiUp != wifiPrevUp)   // link state changed
             {
-                wifiReconnectNotify = true;
-                if (wifiEverConnected)   // genuine reconnection, not the boot connection
-                    ntpSyncRequested = true;
+                Serial.printf("WiFi link %s (had been stable: %d)\r\n", wifiUp ? "up" : "down", stableBeforeDrop);
+                if (!wifiUp)
+                    stableBeforeDrop = wifiStable;   // remember stability at the moment of the drop
+                else
+                    wifiReconnectNotify = true;
+                upSinceMs = millis();
+                wifiStable = false;
             }
+            else if (wifiUp && !wifiStable && millis() - upSinceMs >= WIFI_STABLE_MS)
+                wifiStable = true;
             wifiPrevUp = wifiUp;
-            if (wifiUp)
-                wifiEverConnected = true;
             if (showMsg) {
                 z_PosX += 2;
                 d_PosX += msgStep;
