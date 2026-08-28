@@ -70,6 +70,8 @@ ClockSettings settings = { 0xA5A5A5A5, "", "", "ch.pool.ntp.org", 8, 3, 0, 1, 0,
 const ClockSettings settings_defaults = { 0xA5A5A5A5, "", "", "ch.pool.ntp.org", 8, 3, 0, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 0, "", 30, 0, 0, 2, 1, 1, 1, 2, 35 };
 bool rtcInitialized = false;
 bool apActive = false;              // AP fallback mode active (settings page accessible)
+bool apShutdownPending = false;     // stopAP ran; softAP shutdown deferred to a quieter moment
+unsigned long apShutdownSince = 0;  // millis() when the softAP shutdown was scheduled
 
 unsigned short maxPosX = anzMAX * 8 - 1;            
 unsigned short LEDarr[anzMAX][8];                   
@@ -366,7 +368,7 @@ bool autoConfig()
         }
         Serial.printf("Target SSID %s: %s\r\n", settings.ssid, found ? "FOUND" : "NOT FOUND");
 
-        WiFi.disconnect();
+        WiFi.disconnect(false, false);   // stop any in-flight attempt, keep stored credentials
         delay(200);
         WiFi.mode(WIFI_STA);
         WiFi.begin(settings.ssid, settings.pass);   // credentials from settings
@@ -448,6 +450,12 @@ void smartConfig()
           Serial.printf("SSID:%s\r\n", WiFi.SSID().c_str());
            Serial.printf("PSW:%s\r\n", passHidden(WiFi.psk().c_str()));
           WiFi.setAutoConnect(true);  // enable auto connect
+          
+          strncpy(settings.ssid, WiFi.SSID().c_str(), sizeof(settings.ssid) - 1);   // remember credentials in settings
+          settings.ssid[sizeof(settings.ssid) - 1] = '\0';
+          strncpy(settings.pass, WiFi.psk().c_str(), sizeof(settings.pass) - 1);
+          settings.pass[sizeof(settings.pass) - 1] = '\0';
+          settings_save();
           
           Serial.println("WiFi connected");
           Serial.println(WiFi.localIP());
@@ -538,7 +546,7 @@ void startAP()   // start fallback AP so the settings page stays reachable witho
     WiFi.mode(WIFI_AP_STA);
     WiFi.softAP("MatrixClock-Setup", "12345678");
     WiFi.setAutoReconnect(false);   // stop the SDK's background retry loop
-    WiFi.disconnect();              // quit the ongoing STA reconnect storm so the softAP gets the radio
+    WiFi.disconnect(false, false);  // quit the ongoing STA reconnect storm so the softAP gets the radio, keep stored credentials
     apActive = true;
     apMsgUntil = millis() + 30000UL;   // keep showing the setup hint for 30 seconds
     startMsg("SETUP MODE AP 192.168.4.1");
@@ -548,11 +556,14 @@ void startAP()   // start fallback AP so the settings page stays reachable witho
 void stopAP()    // stop fallback AP once the router connection works again
 {
     if (!apActive) return;
-    WiFi.softAPdisconnect(true);
-    WiFi.mode(WIFI_STA);
-    WiFi.setAutoReconnect(true);    // normal reconnect behavior once the router is back
     apActive = false;
-    Serial.println("AP stopped");
+    WiFi.setAutoReconnect(true);    // normal reconnect behavior once the router is back
+    // Shut the softAP down a few seconds later: switching the opmode in the same
+    // instant the station connection completes can crash the SDK (observed: reset
+    // right after "WiFi connected" with no "AP stopped" printed).
+    apShutdownPending = true;
+    apShutdownSince = millis();
+    Serial.println("AP stop scheduled");
 }
 //**************************************************************************************************
 void startMsg(const char* text, uint8_t step)   // scroll a message across the display; step = px per 50ms tick; queues if busy
@@ -874,13 +885,14 @@ void wifi_reconnect_start()
         Serial.printf("Using settings SSID:%s\r\n", settings.ssid);
     else
         Serial.println("Using saved flash config");
-    WiFi.disconnect();
+    WiFi.disconnect(false, false);   // stop any in-flight attempt, keep stored credentials
     delay(200);
     if (!apActive)     // while the fallback AP is up, stay in AP_STA mode so the AP stays reachable
     {
         WiFi.mode(WIFI_STA);
         delay(100);
     }
+    WiFi.setAutoReconnect(true);   // re-enable the SDK reconnect so the connection attempt can complete
     if (strlen(settings.ssid) > 0)
     {
         WiFi.persistent(false);
@@ -1599,6 +1611,7 @@ void loop() {
                 {
                     startMsg("Wi-Fi Connected");
                     ntpSyncArm = true;
+                    ntpSyncRequested = false;
                 }
             }
             if (WiFi.status() == WL_CONNECTED)
@@ -1626,7 +1639,27 @@ void loop() {
                     reconnectActive = false;
                     wifiCheckCnt = 0;
                     if (apActive)
-                        WiFi.disconnect();   // stop this probe's retry loop so the fallback AP stays responsive
+                    {
+                        WiFi.setAutoReconnect(false);   // stop the SDK's background retry so the fallback AP stays responsive
+                        WiFi.disconnect(false, false);
+                    }
+                }
+            }
+
+            if (apShutdownPending && millis() - apShutdownSince > 8000)   // defer the opmode switch until the link has settled
+            {
+                apShutdownPending = false;
+                if (WiFi.status() == WL_CONNECTED)
+                {
+                    WiFi.softAPdisconnect(true);
+                    WiFi.mode(WIFI_STA);
+                    Serial.println("AP stopped");
+                }
+                else
+                {
+                    apActive = true;   // router dropped again during the grace period: keep the fallback AP
+                    apMsgUntil = millis() + 30000UL;
+                    Serial.println("WiFi dropped again, keeping fallback AP");
                 }
             }
 
@@ -1733,7 +1766,11 @@ void loop() {
                 if (!wifiUp)
                     stableBeforeDrop = wifiStable;   // remember stability at the moment of the drop
                 else
+                {
                     wifiReconnectNotify = true;
+                    if (stableBeforeDrop)   // link had been stably up before the drop -> genuine reconnect
+                        ntpSyncRequested = true;
+                }
                 upSinceMs = millis();
                 wifiStable = false;
             }
