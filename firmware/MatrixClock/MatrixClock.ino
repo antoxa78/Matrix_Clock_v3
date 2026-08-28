@@ -3,7 +3,7 @@
   ********************************************************************************************************
   Author: HACK Lab                                                                                     
   YouTube ID: HACK Lab, welcome to subscribe: https://www.youtube.com/channel/UCxFY1FcIYK9d7riTvIh6eiA                                                          
-  Version 2.3
+  Version 2.4
   HACK_CLOCK is a free download and may be used, modified, evaluated and
   distributed without charge provided the user adheres to version three of the GNU
   General Public License (GPL) and does not remove the copyright notice or this
@@ -11,7 +11,7 @@
   Author: HACK Lab                                                                                        
   Bilibili ID: HACK Lab  welcome to subscribe: https://space.bilibili.com/395145107                                                                             
   WeChat Official Account: HACK Lab, the only release point for open-source resources, regularly sharing open-source hardware and valuable technical articles, welcome to follow.                        
-  Version 2.3                                                                                           
+  Version 2.4                                                                                           
   HACK_CLOCK is a fully open-source hardware project, free to download and use, subject to the GPL V3 open-source license, the license text is available on the gnu.org website.    
 *********************************************************************************************************/
 
@@ -31,7 +31,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v2.3"   // shown on the settings page
+#define FIRMWARE_VERSION "v2.4"   // shown on the settings page
 //#define REVERSE_HORIZONTAL
 //#define REVERSE_VERTICAL
 //***************************Web Settings Page**********************************************************************
@@ -1465,6 +1465,9 @@ void setup() {
     server.begin();
     Serial.println("Web server started");
     ///////////////////////////////////
+    udp.begin(localPort);   // always needed for NTP; in AP-mode boots autoConfig()/smartConfig() never ran their udp.begin()
+    Serial.print("Local port: ");
+    Serial.println(udp.localPort());
     tm* tt;
     if (WiFi.status() == WL_CONNECTED)   // only sync when connected; in AP mode there is no router to reach
     {
@@ -1513,7 +1516,7 @@ void loop() {
         yield();  // on the ESP8266, if the loop must run long operations (e.g. floating point math), call yield regularly so the 8266 keeps running in the background without rebooting or dropping the network.
         server.handleClient();   // handle web settings page requests
         static bool wifiReconnectNotify = false;   // set by the 50ms tick when WiFi comes up
-        static bool ntpSyncRequested = false;      // set on a genuine reconnect (not the boot connect)
+        static bool ntpSyncRequested = false;      // set on a genuine reconnect or when leaving AP mode (not the boot connect)
         if (rtcInitialized && settings.resync && WiFi.status() == WL_CONNECTED)   // daily RTC/NTP resync: sync directly and show the status
         {
             static bool resyncRan = false;
@@ -1602,24 +1605,27 @@ void loop() {
             static bool ntpSyncPending = false;
             static bool ntpSyncArm = false;
 
-            if (wifiReconnectNotify)   // WiFi came up (boot or auto/manual reconnect)
-            {
-                wifiReconnectNotify = false;
-                Serial.println("WiFi connected");
-                Serial.println(WiFi.localIP());
-                if (ntpSyncRequested || apActive)   // genuine reconnection, or leaving AP mode -> resync the RTC once
-                {
-                    startMsg("Wi-Fi Connected");
-                    ntpSyncArm = true;
-                    ntpSyncRequested = false;
-                }
-            }
             if (WiFi.status() == WL_CONNECTED)
             {
                 wifiCheckCnt = 0;
                 reconnectActive = false;
                 if (apActive)
+                {
                     stopAP();   // router is back, fallback AP no longer needed
+                    ntpSyncRequested = true;   // leaving AP mode -> resync the RTC once
+                }
+            }
+            if (wifiReconnectNotify)   // WiFi came up (boot or auto/manual reconnect)
+            {
+                wifiReconnectNotify = false;
+                Serial.println("WiFi connected");
+                Serial.println(WiFi.localIP());
+                if (ntpSyncRequested)   // genuine reconnection, or leaving AP mode -> resync the RTC once
+                {
+                    startMsg("Wi-Fi Connected");
+                    ntpSyncArm = true;
+                    ntpSyncRequested = false;
+                }
             }
             else
             {
