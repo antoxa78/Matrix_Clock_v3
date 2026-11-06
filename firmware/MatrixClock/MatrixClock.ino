@@ -33,7 +33,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.15"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.16"   // shown on the settings page
 //#define REVERSE_HORIZONTAL
 //#define REVERSE_VERTICAL
 //***************************Web Settings Page**********************************************************************
@@ -1154,6 +1154,7 @@ void handleStatus()
     j += ",\"rssi\":" + String(WiFi.RSSI());
     j += ",\"wifi\":" + String((int) WiFi.status());
     j += ",\"uptime\":" + String(millis() / 1000UL);
+    j += ",\"reset\":\"" + jsonEsc(ESP.getResetReason().c_str()) + "\"";
     j += ",\"sketch\":" + String(ESP.getSketchSize());
     j += ",\"freeSketch\":" + String(ESP.getFreeSketchSpace());
     j += ",\"ota\":" + String(Update.isRunning() ? 1 : 0);
