@@ -1,0 +1,32 @@
+Firmware update note (v5.11)
+
+The v5.11 NodeMCU image is about 526 KB because it includes HTTPS support
+for the IMS station feed. A 4M3M layout only leaves enough OTA space for a
+smaller image once v5.10 is installed, so updating directly to v5.11 can
+fail with an update/space error.
+
+No serial connection: two-step web update
+-----------------------------------------
+1. Flash:
+      MatrixClock.ino.nodemcu-4M1M-bridge.bin
+   This is a v5.9 image built for the 4M1M layout (1 MB filesystem,
+   about 1 MB OTA headroom). It is about 413 KB and fits the current
+   OTA space.
+
+2. After the clock reboots, flash:
+      MatrixClock.ino.nodemcu-4M1M.bin
+   This is the full v5.11 image, also built for 4M1M.
+
+3. If the IMS settings were reset during the layout change, set:
+      Weather Source: IMS + Open-Meteo
+      Weather City: Nahariya
+      IMS Station ID: 0 (nearest)
+
+Serial flashing
+---------------
+Flash MatrixClock.ino.nodemcu-4M1M.bin directly with:
+  Flash size: 4 MB (FS:1 MB OTA:~1019 KB)
+  Flash mode: DIO
+
+The settings EEPROM sector is the same for 4M1M and 4M3M (0x3FB000),
+so the main configuration is preserved.
