@@ -33,7 +33,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.10"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.11"   // shown on the settings page
 //#define REVERSE_HORIZONTAL
 //#define REVERSE_VERTICAL
 //***************************Web Settings Page**********************************************************************
@@ -79,7 +79,7 @@ struct ClockSettings {
     uint16_t rainThresh10;   // rain warning threshold in 0.1 mm (12 = 1.2 mm)
     uint16_t heatThresh10;   // heat warning threshold in 0.1 °C (355 = 35.5 °C)
     uint16_t threshFormat;   // 0xA55A when the tenths fields above are valid
-    uint8_t imsRain;         // 0 = off, 1 = use IMS local rain XML
+    uint8_t weatherSource;   // 0 = Open-Meteo, 1 = IMS + Open-Meteo, 2 = IMS only
     uint16_t imsStation;     // IMS station ID, 0 = nearest to Weather City
     uint16_t imsFormat;      // 0xBEEF when the IMS fields above are valid
 };
@@ -639,12 +639,12 @@ void settings_load()
     }
     if (settings.imsFormat != 0xBEEF)   // settings saved by v5.9 or older
     {
-        settings.imsRain = 0;
+        settings.weatherSource = 0;
         settings.imsStation = 0;
         settings.imsFormat = 0xBEEF;
         repaired = true;
     }
-    if (settings.imsRain > 1) { settings.imsRain = 0; repaired = true; }
+    if (settings.weatherSource > 2) { settings.weatherSource = 0; repaired = true; }
     if (settings.imsStation > 9999) { settings.imsStation = 0; repaired = true; }
     if (settings.rainThresh10 < 1 || settings.rainThresh10 > 250) { settings.rainThresh10 = 20; repaired = true; }   // 0.1..25.0 mm
     if (settings.heatThresh10 < 200 || settings.heatThresh10 > 500) { settings.heatThresh10 = 310; repaired = true; }   // 20.0..50.0 C
@@ -954,7 +954,7 @@ void handleValues()
     j += "[\"Weather Speed\",\"weatherSpeed\",[[\"1\",\"Slow\"],[\"2\",\"Norm\"],[\"3\",\"Fast\"],[\"4\",\"VFast\"]],\"" + String(settings.weatherSpeed) + "\"],";
     j += "[\"Rain Warning\",\"rainWarn\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.rainWarn) + "\"],";
     j += "[\"Rain Threshold (mm/h, e.g. 1.2)\",\"rainThresh\",null,\"" + tenthsStr(settings.rainThresh10) + "\"],";
-    j += "[\"Use IMS Local Rain\",\"imsRain\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.imsRain) + "\"],";
+    j += "[\"Weather Source\",\"weatherSource\",[[\"0\",\"Open-Meteo\"],[\"1\",\"IMS + Open-Meteo\"],[\"2\",\"IMS only\"]],\"" + String(settings.weatherSource) + "\"],";
     j += "[\"IMS Station ID (0 = nearest, 343 = Shave Ziyyon)\",\"imsStation\",null,\"" + String(settings.imsStation) + "\"],";
     j += "[\"Heat Warning\",\"heatWarn\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.heatWarn) + "\"],";
     j += "[\"Heat Threshold (°C, e.g. 35.5)\",\"heatThresh\",null,\"" + tenthsStr(settings.heatThresh10) + "\"],";
@@ -975,10 +975,14 @@ void handleWeatherPage()
 
     double rainLimit = settings.rainThresh10 / 10.0;
     bool dataForCity = weatherDataValid && strcmp(weatherDataCity, settings.weatherCity) == 0;
-    bool localFresh = settings.imsRain && imsRainValid && (millis() - imsUpdatedMs < 2700000UL);
-    bool warning = dataForCity && settings.rainWarn
-                && (weatherPrecipRate >= rainLimit || weatherRainPeak >= rainLimit);
-    if (localFresh && settings.rainWarn && imsRainRate >= rainLimit) warning = true;
+    bool localFresh = settings.weatherSource != 0 && imsRainValid && (millis() - imsUpdatedMs < 2700000UL);
+    bool warning = false;
+    if (settings.rainWarn)
+    {
+        if (settings.weatherSource != 2 && dataForCity
+            && (weatherPrecipRate >= rainLimit || weatherRainPeak >= rainLimit)) warning = true;
+        if (localFresh && imsRainRate >= rainLimit) warning = true;
+    }
     unsigned long age = dataForCity ? (millis() - weatherUpdatedMs) / 1000UL : 0;
     unsigned long localAge = imsRainValid ? (millis() - imsUpdatedMs) / 1000UL : 0;
 
@@ -1001,8 +1005,13 @@ void handleWeatherPage()
             "</style></head><body><div class=wrap><h1>Rain / Weather</h1><div class=city>";
     page += settings.weatherCity[0] ? settings.weatherCity : "No weather city configured";
     page += "</div><table>";
+    page += "<tr><td>Weather source</td><td>";
+    page += settings.weatherSource == 0 ? "Open-Meteo" : (settings.weatherSource == 1 ? "IMS + Open-Meteo" : "IMS only");
+    page += "</td></tr>";
 
-    if (!settings.weather || settings.weatherCity[0] == 0)
+    if (settings.weatherSource == 2)
+        page += "<tr><td>Open-Meteo</td><td class=no>Disabled (IMS only)</td></tr>";
+    else if (!settings.weather || settings.weatherCity[0] == 0)
         page += "<tr><td>Status</td><td class=no>Weather is off</td></tr>";
     else if (!dataForCity)
     {
@@ -1033,7 +1042,7 @@ void handleWeatherPage()
         page += row;
         page += "</td></tr>";
     }
-    if (settings.imsRain)
+    if (settings.weatherSource != 0)
     {
         char row[100];
         page += "<tr><td>Local station</td><td>";
@@ -1064,22 +1073,27 @@ void handleWeatherPage()
             page += "<tr><td>Local rain now</td><td class=no>No data yet</td></tr>";
     }
     page += "</table><div class=note>";
-    if (settings.weather)
+    if (settings.weatherSource != 2 && settings.weather)
     {
         page += "The clock checks every ";
         page += String(settings.weatherInterval);
         page += " min. It warns when the current rain rate or the peak rate "
                 "forecast for the next 2 hours reaches your threshold. This page "
                 "refreshes every 30 seconds.<br><br>"
-                "Data comes from Open-Meteo model forecasts, not a local rain gauge. "
+                "Open-Meteo data is model forecast output, not a local rain gauge. "
                 "Outside central Europe and North America the 15-minute values are "
                 "interpolated from hourly model data.";
-        if (settings.imsRain)
-            page += "<br><br>Local rain uses the IMS 10-minute XML station: "
-                    "nearest to your Weather City when the station ID is 0, or the "
-                    "station ID you set. IMS data can lag by about 30 minutes. "
-                    "<a href='https://www.ims.gov.il/sites/default/files/ims_data/xml_files/imslasthour.xml' "
-                    "target='_blank'>View IMS XML</a>.";
+    }
+    if (settings.weatherSource != 0)
+    {
+        page += "<br><br>Local rain uses the IMS 10-minute XML station: "
+                "nearest to your Weather City when the station ID is 0, or the "
+                "station ID you set. IMS data can lag by about 30 minutes. "
+                "<a href='https://www.ims.gov.il/sites/default/files/ims_data/xml_files/imslasthour.xml' "
+                "target='_blank'>View IMS XML</a>.";
+        if (settings.weatherSource == 2)
+            page += "<br><br>IMS-only mode uses current station observations. "
+                    "It has no forecast, so rain warnings use the current local rate only.";
     }
     page += "<a href='/'>Back to settings</a></div></div></body></html>";
     sendChunked(200, "text/html", page);
@@ -1144,7 +1158,7 @@ void handleReset()
     settings.rainThresh10 = 20;
     settings.heatThresh10 = 310;
     settings.threshFormat = 0xA55A;
-    settings.imsRain = 0;
+    settings.weatherSource = 0;
     settings.imsStation = 0;
     settings.imsFormat = 0xBEEF;
     settings_save();
@@ -1220,7 +1234,7 @@ void handleSave()
     settings.rainThresh = (uint8_t) constrain((settings.rainThresh10 + 5) / 10, 1, 25);   // keep legacy field in sync
     settings.heatThresh = (uint8_t) constrain((settings.heatThresh10 + 5) / 10, 20, 50);
     settings.threshFormat = 0xA55A;
-    if (server.hasArg("imsRain")) settings.imsRain = (uint8_t) (server.arg("imsRain").toInt() ? 1 : 0);
+    if (server.hasArg("weatherSource")) settings.weatherSource = (uint8_t) constrain(server.arg("weatherSource").toInt(), 0, 2);
     if (server.hasArg("imsStation")) settings.imsStation = (uint16_t) constrain(server.arg("imsStation").toInt(), 0, 9999);
     settings.imsFormat = 0xBEEF;
     if (server.hasArg("warnAnim")) settings.warnAnim = (uint8_t) (server.arg("warnAnim").toInt() ? 1 : 0);
@@ -1697,7 +1711,7 @@ bool imsNearestStation(uint16_t& id, uint32_t& offset, char* name, size_t nameLe
 //**************************************************************************************************
 bool fetchImsXmlRain()   // read a byte range from the IMS 10-minute XML and extract the selected station
 {
-    if (!settings.imsRain || WiFi.status() != WL_CONNECTED) return false;
+    if (settings.weatherSource == 0 || WiFi.status() != WL_CONNECTED) return false;
 
     uint16_t stationId = settings.imsStation;
     uint32_t stationOffset = 0;
@@ -3268,7 +3282,7 @@ void setup() {
     digitalWrite(CS, HIGH);
     Serial.begin(115200);
     settings_load();              // load saved settings from EEPROM
-    Serial.printf("Settings loaded: SSID:%s PSW:%s NTP:%s TZ:%d BR:%d ORIENT:%d DST:%d COLON:%d DIGANIM:%d MARQ:%d PULSE:%d NTPINT:%d WEATHER:%d WCITY:%s WCITYSHOW:%d WINT:%d IMS:%d/%d WSPEED:%d SDINT:%d RWARN:%d HWARN:%d RTHR:%d.%d HTHR:%d.%d WARNANIM:%d SHABBAT:%d SLEAD:%d SFREQ:%d SANIM:%d HOLIDAY:%d WPAUTH:%s\r\n", settings.ssid, passHidden(settings.pass), settings.ntpServer, settings.tzOffset, settings.brightness, settings.orient, settings.dstRule, settings.colonAnim, settings.digitAnim, settings.marquee, settings.pulse, settings.ntpInterval, settings.weather, settings.weatherCity, settings.weatherCityShow, settings.weatherInterval, settings.imsRain, settings.imsStation, settings.weatherSpeed, settings.scrollDateInt, settings.rainWarn, settings.heatWarn, settings.rainThresh10 / 10, settings.rainThresh10 % 10, settings.heatThresh10 / 10, settings.heatThresh10 % 10, settings.warnAnim, settings.shabbat, settings.shabbatLead, settings.shabbatFreq, settings.shabbatAnim, settings.holidayGreetings, settings.webPass[0] ? "set" : "none");
+    Serial.printf("Settings loaded: SSID:%s PSW:%s NTP:%s TZ:%d BR:%d ORIENT:%d DST:%d COLON:%d DIGANIM:%d MARQ:%d PULSE:%d NTPINT:%d WEATHER:%d WCITY:%s WCITYSHOW:%d WINT:%d WSRC:%d/%d WSPEED:%d SDINT:%d RWARN:%d HWARN:%d RTHR:%d.%d HTHR:%d.%d WARNANIM:%d SHABBAT:%d SLEAD:%d SFREQ:%d SANIM:%d HOLIDAY:%d WPAUTH:%s\r\n", settings.ssid, passHidden(settings.pass), settings.ntpServer, settings.tzOffset, settings.brightness, settings.orient, settings.dstRule, settings.colonAnim, settings.digitAnim, settings.marquee, settings.pulse, settings.ntpInterval, settings.weather, settings.weatherCity, settings.weatherCityShow, settings.weatherInterval, settings.weatherSource, settings.imsStation, settings.weatherSpeed, settings.scrollDateInt, settings.rainWarn, settings.heatWarn, settings.rainThresh10 / 10, settings.rainThresh10 % 10, settings.heatThresh10 / 10, settings.heatThresh10 % 10, settings.warnAnim, settings.shabbat, settings.shabbatLead, settings.shabbatFreq, settings.shabbatAnim, settings.holidayGreetings, settings.webPass[0] ? "set" : "none");
     if (!settings.weather)
         Serial.println("Weather: disabled in settings");
     else if (strlen(settings.weatherCity) == 0)
@@ -3424,7 +3438,7 @@ void loop() {
                 }
             }
         }
-        if (!otaBusy && rtcInitialized && settings.weather && WiFi.status() == WL_CONNECTED && strlen(settings.weatherCity) > 0)   // periodic weather update
+        if (!otaBusy && rtcInitialized && settings.weatherSource != 2 && settings.weather && WiFi.status() == WL_CONNECTED && strlen(settings.weatherCity) > 0)   // periodic Open-Meteo update
         {
             static unsigned long weatherLast = 0;
             static bool weatherArmed = false;
@@ -3458,7 +3472,7 @@ void loop() {
                 {
                     double rainLimit = settings.rainThresh10 / 10.0;
                     double heatLimit = settings.heatThresh10 / 10.0;
-                    bool localFresh = settings.imsRain && imsRainValid && (millis() - imsUpdatedMs < 2700000UL);
+                    bool localFresh = settings.weatherSource && imsRainValid && (millis() - imsUpdatedMs < 2700000UL);
                     double nowRate = localFresh ? imsRainRate : precip;
                     double nowTemp = (localFresh && imsTempValid) ? imsTempC : temp;
                     int nowHum = (localFresh && imsHumValid) ? imsHumidity : hum;
@@ -3522,13 +3536,15 @@ void loop() {
                     startMsg("WEATHER FAIL");
             }
         }
-        if (!otaBusy && rtcInitialized && settings.imsRain && WiFi.status() == WL_CONNECTED)   // IMS local rain from the public 10-min XML
+        if (!otaBusy && rtcInitialized && settings.weatherSource && WiFi.status() == WL_CONNECTED)   // IMS local rain from the public 10-min XML
         {
             static unsigned long imsLast = 0;
             static bool imsArmed = false;
             static bool imsFirst = true;
             static bool imsWasWet = false;
             static unsigned long imsLastWarn = 0;
+            static unsigned long imsLastMsg = 0;
+            static unsigned long imsLastHeat = 0;
             if (!imsArmed)
             {
                 imsLast = millis();
@@ -3574,6 +3590,50 @@ void loop() {
                         }
                         f_scroll_x = false;
                         imsLastWarn = millis();
+                    }
+                    if (settings.weatherSource == 2)
+                    {
+                        double heatLimit = settings.heatThresh10 / 10.0;
+                        if (settings.heatWarn && imsTempValid && imsTempC >= heatLimit
+                            && (imsLastHeat == 0 || (millis() - imsLastHeat) >= 1200000UL))
+                        {
+                            char buf[160];
+                            if (settings.weatherCityShow)
+                                snprintf(buf, sizeof buf, "HEAT WARNING: LOCAL %.1fC %s Humidity: %d%%",
+                                         imsTempC, settings.weatherCity, imsHumValid ? imsHumidity : 0);
+                            else
+                                snprintf(buf, sizeof buf, "HEAT WARNING: LOCAL %.1fC Humidity: %d%%",
+                                         imsTempC, imsHumValid ? imsHumidity : 0);
+                            weatherAlertActive = true;
+                            if (settings.warnAnim)
+                            {
+                                weatherAlertMsgActive = false;
+                                startAlertAnimation(ALERT_ANIM_HEAT, buf, settings.weatherSpeed);
+                            }
+                            else
+                            {
+                                weatherAlertMsgActive = true;
+                                alertAnimActive = false;
+                                showMsg = false;
+                                msgQueueCount = 0;
+                                startMsg(buf, settings.weatherSpeed);
+                            }
+                            f_scroll_x = false;
+                            imsLastHeat = millis();
+                        }
+                        else if (settings.weather
+                                 && (imsLastMsg == 0 || (millis() - imsLastMsg) >= (unsigned long) settings.weatherInterval * 60000UL))
+                        {
+                            char buf[160];
+                            if (settings.weatherCityShow)
+                                snprintf(buf, sizeof buf, "%s Outside Temp: %.1fC, Humidity: %d%%",
+                                         settings.weatherCity, imsTempValid ? imsTempC : 0.0f, imsHumValid ? imsHumidity : 0);
+                            else
+                                snprintf(buf, sizeof buf, "Outside Temp: %.1fC, Humidity: %d%%",
+                                         imsTempValid ? imsTempC : 0.0f, imsHumValid ? imsHumidity : 0);
+                            startMsg(buf, settings.weatherSpeed);
+                            imsLastMsg = millis();
+                        }
                     }
                     imsWasWet = wet;
                 }
