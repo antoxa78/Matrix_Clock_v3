@@ -33,7 +33,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.13"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.14"   // shown on the settings page
 //#define REVERSE_HORIZONTAL
 //#define REVERSE_VERTICAL
 //***************************Web Settings Page**********************************************************************
@@ -1773,9 +1773,34 @@ bool imsNearestStation(uint16_t& id, uint32_t& offset, char* name, size_t nameLe
     return true;
 }
 //**************************************************************************************************
-bool fetchImsXmlRain()   // read a byte range from the IMS 10-minute XML and extract the selected station
+struct ImsFetchState {
+    WiFiClientSecure client;
+    HTTPClient http;
+    bool active;
+    unsigned long started;
+    uint16_t stationId;
+    char stationName[28];
+    float stationDistance;
+    char line[128];
+    size_t lineLen;
+    bool inObs;
+    bool target;
+    bool got;
+    bool finished;
+    uint8_t obsCount;
+    float lastRain;
+    float lastTemp;
+    int lastHum;
+    bool gotTemp;
+    bool gotHum;
+    char lastTime[24];
+};
+static ImsFetchState imsFetch;
+static int8_t imsFetchResult = 0;   // 0 = idle, 1 = success, -1 = failed
+
+bool imsFetchStart()
 {
-    if (settings.weatherSource == 0 || WiFi.status() != WL_CONNECTED) return false;
+    if (imsFetch.active || settings.weatherSource == 0 || WiFi.status() != WL_CONNECTED) return false;
 
     uint16_t stationId = settings.imsStation;
     uint32_t stationOffset = 0;
@@ -1805,141 +1830,162 @@ bool fetchImsXmlRain()   // read a byte range from the IMS 10-minute XML and ext
 
     unsigned long rangeStart = stationOffset > IMS_XML_MARGIN ? stationOffset - IMS_XML_MARGIN : 0;
 
-    WiFiClientSecure client;
-    client.setInsecure();          // IMS uses a public certificate; skip the large cert store
-    client.setBufferSizes(1024, 512);
-
-    HTTPClient http;
-    http.setTimeout(10000);
-    if (!http.begin(client, IMS_XML_URL))
+    imsFetch.client.setInsecure();
+    imsFetch.client.setBufferSizes(1024, 512);
+    imsFetch.http.setTimeout(10000);
+    if (!imsFetch.http.begin(imsFetch.client, IMS_XML_URL))
     {
         Serial.println("IMS XML: begin failed");
         return false;
     }
-    http.addHeader("Range", String("bytes=") + String(rangeStart) + "-");
-    http.addHeader("Accept-Encoding", "identity");
-    int code = http.GET();
+    imsFetch.http.addHeader("Range", String("bytes=") + String(rangeStart) + "-");
+    imsFetch.http.addHeader("Accept-Encoding", "identity");
+    int code = imsFetch.http.GET();
     if (code != 206 && code != 200)
     {
         Serial.printf("IMS XML: HTTP %d\r\n", code);
-        http.end();
+        imsFetch.http.end();
         return false;
     }
 
-    WiFiClient* stream = http.getStreamPtr();
-    if (!stream) { http.end(); return false; }
-
-    char line[128];
-    size_t lineLen = 0;
-    bool inObs = false;
-    bool target = false;
-    uint8_t obsCount = 0;
-    float lastRain = 0;
-    float lastTemp = 0;
-    int lastHum = 0;
-    bool gotTemp = false;
-    bool gotHum = false;
-    char lastTime[24] = "";
-    bool got = false;
-    bool finished = false;
-    unsigned long started = millis();
-
-    while (!finished && millis() - started < 12000UL)
-    {
-        while (stream->available())
-        {
-            int c = stream->read();
-            if (c < 0) break;
-            if (c == '\r') continue;
-            if (c == '\n')
-            {
-                line[lineLen] = 0;
-                if (strstr(line, "<Observation>"))
-                {
-                    inObs = true;
-                    target = false;
-                }
-                if (inObs)
-                {
-                    char* p;
-                    if ((p = strstr(line, "<stn_num>")) != NULL)
-                        target = (atoi(p + 9) == stationId);
-                    if (target)
-                    {
-                        if ((p = strstr(line, "<time_obs>")) != NULL)
-                        {
-                            p += 10;
-                            size_t i = 0;
-                            while (p[i] && p[i] != '<' && i < sizeof(lastTime) - 1)
-                            {
-                                lastTime[i] = p[i];
-                                i++;
-                            }
-                            lastTime[i] = 0;
-                        }
-                        else if (strstr(line, "<Rain/>") != NULL)
-                            lastRain = 0;
-                        else if ((p = strstr(line, "<Rain>")) != NULL)
-                            lastRain = atof(p + 6);
-                        else if ((p = strstr(line, "<TD>")) != NULL)
-                        {
-                            lastTemp = atof(p + 4);
-                            gotTemp = true;
-                        }
-                        else if ((p = strstr(line, "<RH>")) != NULL)
-                        {
-                            lastHum = atoi(p + 4);
-                            gotHum = true;
-                        }
-                    }
-                    if (strstr(line, "</Observation>"))
-                    {
-                        if (target)
-                        {
-                            obsCount++;
-                            got = true;
-                            if (obsCount >= 6)
-                            {
-                                finished = true;
-                                break;
-                            }
-                        }
-                        inObs = false;
-                    }
-                }
-                lineLen = 0;
-            }
-            else if (lineLen < sizeof(line) - 1)
-                line[lineLen++] = (char) c;
-        }
-        if (finished) break;
-        if (!stream->connected() && !stream->available()) break;
-        delay(1);
-    }
-    http.end();
-
-    if (!got)
-    {
-        Serial.println("IMS XML: station not found");
-        return false;
-    }
-    imsRainRate = lastRain * 6.0f;   // XML is a 10-minute sum -> mm/h
-    imsTempC = lastTemp;
-    imsHumidity = lastHum;
-    imsTempValid = gotTemp;
-    imsHumValid = gotHum;
-    imsUpdatedMs = millis();
-    imsStationId = stationId;
-    strncpy(imsStationName, stationName, sizeof(imsStationName) - 1);
-    imsStationName[sizeof(imsStationName) - 1] = 0;
-    imsStationDistanceKm = stationDistance;
-    strncpy(imsObsTime, lastTime, sizeof(imsObsTime) - 1);
-    imsObsTime[sizeof(imsObsTime) - 1] = 0;
-    imsRainValid = true;
-    Serial.printf("IMS XML: %s #%d %.1f mm/10min = %.1f mm/h at %s\r\n",
-                  imsStationName, imsStationId, lastRain, imsRainRate, imsObsTime);
+    imsFetch.stationId = stationId;
+    strncpy(imsFetch.stationName, stationName, sizeof(imsFetch.stationName) - 1);
+    imsFetch.stationName[sizeof(imsFetch.stationName) - 1] = 0;
+    imsFetch.stationDistance = stationDistance;
+    imsFetch.lineLen = 0;
+    imsFetch.inObs = false;
+    imsFetch.target = false;
+    imsFetch.got = false;
+    imsFetch.finished = false;
+    imsFetch.obsCount = 0;
+    imsFetch.lastRain = 0;
+    imsFetch.lastTemp = 0;
+    imsFetch.lastHum = 0;
+    imsFetch.gotTemp = false;
+    imsFetch.gotHum = false;
+    imsFetch.lastTime[0] = 0;
+    imsFetch.started = millis();
+    imsFetch.active = true;
+    imsFetchResult = 0;
+    Serial.printf("IMS XML: reading %s #%d...\r\n", imsFetch.stationName, imsFetch.stationId);
     return true;
 }
+
+void imsFetchFinish(bool success)
+{
+    imsFetch.http.end();
+    imsFetch.active = false;
+    if (success && imsFetch.got)
+    {
+        imsRainRate = imsFetch.lastRain * 6.0f;   // XML is a 10-minute sum -> mm/h
+        imsTempC = imsFetch.lastTemp;
+        imsHumidity = imsFetch.lastHum;
+        imsTempValid = imsFetch.gotTemp;
+        imsHumValid = imsFetch.gotHum;
+        imsUpdatedMs = millis();
+        imsStationId = imsFetch.stationId;
+        strncpy(imsStationName, imsFetch.stationName, sizeof(imsStationName) - 1);
+        imsStationName[sizeof(imsStationName) - 1] = 0;
+        imsStationDistanceKm = imsFetch.stationDistance;
+        strncpy(imsObsTime, imsFetch.lastTime, sizeof(imsObsTime) - 1);
+        imsObsTime[sizeof(imsObsTime) - 1] = 0;
+        imsRainValid = true;
+        imsFetchResult = 1;
+        Serial.printf("IMS XML: %s #%d %.1f mm/10min = %.1f mm/h at %s\r\n",
+                      imsStationName, imsStationId, imsFetch.lastRain, imsRainRate, imsObsTime);
+    }
+    else
+    {
+        imsFetchResult = -1;
+        Serial.println("IMS XML: station not found or request timed out");
+    }
+}
+
+void imsFetchPump()   // read a small chunk per loop iteration; never block for the whole XML
+{
+    if (!imsFetch.active) return;
+    if (Update.isRunning() || otaRebootAt != 0)
+    {
+        imsFetchFinish(false);
+        return;
+    }
+    WiFiClient* stream = imsFetch.http.getStreamPtr();
+    if (!stream) { imsFetchFinish(false); return; }
+
+    uint16_t n = 0;
+    while (stream->available() && n < 512)
+    {
+        int c = stream->read();
+        if (c < 0) break;
+        n++;
+        if (c == '\r') continue;
+        if (c == '\n')
+        {
+            imsFetch.line[imsFetch.lineLen] = 0;
+            if (strstr(imsFetch.line, "<Observation>"))
+            {
+                imsFetch.inObs = true;
+                imsFetch.target = false;
+            }
+            if (imsFetch.inObs)
+            {
+                char* p;
+                if ((p = strstr(imsFetch.line, "<stn_num>")) != NULL)
+                    imsFetch.target = (atoi(p + 9) == imsFetch.stationId);
+                if (imsFetch.target)
+                {
+                    if ((p = strstr(imsFetch.line, "<time_obs>")) != NULL)
+                    {
+                        p += 10;
+                        size_t i = 0;
+                        while (p[i] && p[i] != '<' && i < sizeof(imsFetch.lastTime) - 1)
+                        {
+                            imsFetch.lastTime[i] = p[i];
+                            i++;
+                        }
+                        imsFetch.lastTime[i] = 0;
+                    }
+                    else if (strstr(imsFetch.line, "<Rain/>") != NULL)
+                        imsFetch.lastRain = 0;
+                    else if ((p = strstr(imsFetch.line, "<Rain>")) != NULL)
+                        imsFetch.lastRain = atof(p + 6);
+                    else if ((p = strstr(imsFetch.line, "<TD>")) != NULL)
+                    {
+                        imsFetch.lastTemp = atof(p + 4);
+                        imsFetch.gotTemp = true;
+                    }
+                    else if ((p = strstr(imsFetch.line, "<RH>")) != NULL)
+                    {
+                        imsFetch.lastHum = atoi(p + 4);
+                        imsFetch.gotHum = true;
+                    }
+                }
+                if (strstr(imsFetch.line, "</Observation>"))
+                {
+                    if (imsFetch.target)
+                    {
+                        imsFetch.obsCount++;
+                        imsFetch.got = true;
+                        if (imsFetch.obsCount >= 6)
+                        {
+                            imsFetch.finished = true;
+                            break;
+                        }
+                    }
+                    imsFetch.inObs = false;
+                }
+            }
+            imsFetch.lineLen = 0;
+        }
+        else if (imsFetch.lineLen < sizeof(imsFetch.line) - 1)
+            imsFetch.line[imsFetch.lineLen++] = (char) c;
+    }
+
+    if (imsFetch.finished || (millis() - imsFetch.started) > 15000UL
+        || (!stream->connected() && !stream->available()))
+        imsFetchFinish(imsFetch.got);
+}
+
 //**************************************************************************************************
 //***********************WiFi Reconnect Logic**********************************************************************
 // starts a reconnect attempt (non-blocking, result is checked in loop())
@@ -3424,6 +3470,7 @@ void loop() {
     refresh_display();
     while (true) {
         yield();  // on the ESP8266, if the loop must run long operations (e.g. floating point math), call yield regularly so the 8266 keeps running in the background without rebooting or dropping the network.
+        imsFetchPump();   // read at most a small chunk of the IMS XML per loop iteration
         handleSerialCommand();
         server.handleClient();   // handle web settings page requests
         if (otaRebootAt != 0 && (long) (millis() - otaRebootAt) >= 0)
@@ -3600,7 +3647,7 @@ void loop() {
                     startMsg("WEATHER FAIL");
             }
         }
-        if (!otaBusy && rtcInitialized && settings.weatherSource && WiFi.status() == WL_CONNECTED)   // IMS local rain from the public 10-min XML
+        if (!otaBusy && rtcInitialized && settings.weatherSource != 0 && WiFi.status() == WL_CONNECTED)
         {
             static unsigned long imsLast = 0;
             static bool imsArmed = false;
@@ -3609,21 +3656,12 @@ void loop() {
             static unsigned long imsLastWarn = 0;
             static unsigned long imsLastMsg = 0;
             static unsigned long imsLastHeat = 0;
-            if (!imsArmed)
+
+            if (imsFetchResult != 0)
             {
-                imsLast = millis();
-                imsArmed = true;
-                Serial.printf("IMS: local station %s check in %s (then every 10 min)\r\n",
-                              settings.imsStation == 0 ? "nearest" : "selected",
-                              imsFirst ? "20s" : "10 min");
-            }
-            unsigned long imsWait = imsFirst ? 20000UL : 600000UL;
-            if ((millis() - imsLast) >= imsWait)
-            {
-                imsArmed = false;
-                imsFirst = false;
-                Serial.println("IMS: checking local station...");
-                if (fetchImsXmlRain())
+                int8_t result = imsFetchResult;
+                imsFetchResult = 0;
+                if (result > 0)
                 {
                     double limit = settings.rainThresh10 / 10.0;
                     bool wet = imsRainRate >= limit;
@@ -3700,6 +3738,25 @@ void loop() {
                         }
                     }
                     imsWasWet = wet;
+                }
+            }
+            else if (!imsFetch.active)
+            {
+                if (!imsArmed)
+                {
+                    imsLast = millis();
+                    imsArmed = true;
+                    Serial.printf("IMS: local station %s check in %s (then every 10 min)\r\n",
+                                  settings.imsStation == 0 ? "nearest" : "selected",
+                                  imsFirst ? "20s" : "10 min");
+                }
+                unsigned long imsWait = imsFirst ? 20000UL : 600000UL;
+                if ((millis() - imsLast) >= imsWait)
+                {
+                    imsArmed = false;
+                    imsFirst = false;
+                    Serial.println("IMS: checking local station...");
+                    imsFetchStart();
                 }
             }
         }
