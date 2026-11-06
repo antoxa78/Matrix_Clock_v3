@@ -33,7 +33,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.11"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.12"   // shown on the settings page
 //#define REVERSE_HORIZONTAL
 //#define REVERSE_VERTICAL
 //***************************Web Settings Page**********************************************************************
@@ -844,6 +844,7 @@ String tenthsStr(uint16_t v)   // 12 -> "1.2" (used by the settings page and log
     snprintf(b, sizeof b, "%u.%u", (unsigned) (v / 10), (unsigned) (v % 10));
     return String(b);
 }
+String imsStationOptions();   // defined with the IMS station table below
 //**************************************************************************************************
 void sendChunked(int code, const char* contentType, const String& body)
     // ESP8266 lwIP can silently drop a TCP segment when a response is handed to the socket as one
@@ -928,7 +929,7 @@ void handleValues()
     if (!webAuthOk()) { server.requestAuthentication(); return; }
     server.keepAlive(false);
     String j;
-    j.reserve(2300);
+    j.reserve(5200);
     j = "{\"f\":[";
     j += "[\"SSID\",\"ssid\",null,\"" + jsonEsc(settings.ssid) + "\"],";
     j += "[\"WiFi Password\",\"pass\",null,\"\"],";   // never return the saved password; leave blank to keep it
@@ -955,7 +956,7 @@ void handleValues()
     j += "[\"Rain Warning\",\"rainWarn\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.rainWarn) + "\"],";
     j += "[\"Rain Threshold (mm/h, e.g. 1.2)\",\"rainThresh\",null,\"" + tenthsStr(settings.rainThresh10) + "\"],";
     j += "[\"Weather Source\",\"weatherSource\",[[\"0\",\"Open-Meteo\"],[\"1\",\"IMS + Open-Meteo\"],[\"2\",\"IMS only\"]],\"" + String(settings.weatherSource) + "\"],";
-    j += "[\"IMS Station ID (0 = nearest, 343 = Shave Ziyyon)\",\"imsStation\",null,\"" + String(settings.imsStation) + "\"],";
+    j += "[\"IMS Station\",\"imsStation\"," + imsStationOptions() + ",\"" + String(settings.imsStation) + "\"],";
     j += "[\"Heat Warning\",\"heatWarn\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.heatWarn) + "\"],";
     j += "[\"Heat Threshold (°C, e.g. 35.5)\",\"heatThresh\",null,\"" + tenthsStr(settings.heatThresh10) + "\"],";
     j += "[\"Warning Animation\",\"warnAnim\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.warnAnim) + "\"],";
@@ -1466,86 +1467,107 @@ struct ImsStationInfo {
     const char* name;
 };
 static const ImsStationInfo imsStations[] PROGMEM = {
-    { 2, 32817001, 35762001, 1016UL, "AVNE ETAN" },
-    { 6, 32880000, 35650400, 3804UL, "BET ZAYDA" },
-    { 8, 32702000, 35584000, 6642UL, "ZEMAH" },
-    { 10, 33129002, 35805000, 9525UL, "MEROM GOLAN PICMAN" },
-    { 11, 32698002, 35509998, 12426UL, "YAVNEEL" },
-    { 13, 32705002, 35405998, 15269UL, "TAVOR KADOORIE" },
-    { 16, 32596001, 35277000, 18199UL, "AFULA NIR HAEMEQ" },
-    { 20, 32174999, 35096001, 20929UL, "QARNE SHOMERON" },
-    { 21, 32105600, 35211400, 23763UL, "ARIEL" },
-    { 22, 31770400, 35197300, 26567UL, "JERUSALEM GIVAT RAM" },
-    { 23, 31781000, 35222000, 29556UL, "JERUSALEM CENTRE" },
-    { 24, 31944900, 35149900, 32450UL, "HAR HARASHA" },
-    { 25, 31690000, 34973999, 35285UL, "NETIV HALAMED HE" },
-    { 28, 31357000, 35066002, 38158UL, "SHANI" },
-    { 29, 31250000, 35186001, 40941UL, "ARAD" },
-    { 30, 31997000, 35451000, 43721UL, "GILGAL" },
-    { 33, 30778999, 35238998, 46565UL, "HAZEVA" },
-    { 36, 29885000, 35077000, 49219UL, "YOTVATA" },
-    { 41, 32803400, 35054800, 52172UL, "HAIFA REFINERIES" },
-    { 42, 32761002, 35021000, 54636UL, "HAIFA UNIVERSITY" },
-    { 43, 32773600, 35022300, 57502UL, "HAIFA TECHNION" },
-    { 44, 32681000, 34959000, 60439UL, "EN KARMEL" },
-    { 45, 32572400, 34954600, 63308UL, "ZIKHRON YAAQOV" },
-    { 46, 32473000, 34882000, 66143UL, "HADERA PORT" },
-    { 54, 32007000, 34813999, 68951UL, "BET DAGAN" },
-    { 58, 31271999, 34389000, 71870UL, "BESOR FARM" },
-    { 62, 32979999, 35507000, 74832UL, "ZEFAT HAR KENAAN" },
-    { 64, 29553000, 34952000, 77726UL, "ELAT" },
-    { 65, 31031000, 35391998, 80267UL, "SEDOM" },
-    { 67, 32603001, 35096001, 83106UL, "EN HASHOFET" },
-    { 73, 33064999, 35216999, 85912UL, "ELON" },
-    { 74, 31816600, 34724400, 88690UL, "QEVUZAT YAVNE" },
-    { 75, 31725000, 34976002, 91075UL, "BEIT JIMAL" },
-    { 77, 31664000, 35123001, 93449UL, "ROSH ZURIM" },
     { 78, 32846600, 35112300, 96251UL, "AFEQ" },
-    { 79, 31503600, 34648000, 99090UL, "DOROT" },
-    { 82, 31659000, 34680000, 101918UL, "NEGBA" },
-    { 90, 32159800, 35351300, 107040UL, "ITAMAR" },
-    { 98, 30870001, 34794998, 109780UL, "SEDE BOQER" },
-    { 99, 32862000, 35374000, 112592UL, "DEIR HANNA" },
-    { 106, 33080600, 35107900, 114964UL, "ROSH HANIQRA" },
-    { 107, 32388000, 34938000, 117786UL, "EN HAHORESH" },
-    { 112, 31070800, 34851300, 120210UL, "ZOMET HANEGEV" },
-    { 121, 31791000, 34805000, 125361UL, "HAFEZ HAYYIM" },
+    { 16, 32596001, 35277000, 18199UL, "AFULA NIR HAEMEQ" },
     { 123, 32915000, 35513500, 128230UL, "AMMIAD" },
+    { 29, 31250000, 35186001, 40941UL, "ARAD" },
+    { 21, 32105600, 35211400, 23763UL, "ARIEL" },
     { 124, 31834200, 34637400, 130587UL, "ASHDOD PORT" },
-    { 178, 32058000, 34758800, 133404UL, "TEL AVIV COAST" },
-    { 186, 32708000, 35178001, 136243UL, "NEWE YAAR" },
-    { 188, 31787800, 35125800, 139114UL, "ZOVA" },
-    { 202, 33172001, 35612999, 141910UL, "KEFAR BLUM" },
-    { 205, 32884400, 35301500, 144768UL, "ESHHAR" },
-    { 206, 32467998, 35488998, 147566UL, "EDEN FARM" },
-    { 207, 30365999, 35147999, 150465UL, "PARAN" },
     { 208, 31639400, 34521500, 153310UL, "ASHQELON PORT" },
-    { 210, 31588100, 35391600, 156153UL, "METZOKE DRAGOT" },
+    { 271, 30787600, 34771000, 188784UL, "AVDAT" },
+    { 2, 32817001, 35762001, 1016UL, "AVNE ETAN" },
+    { 353, 33023998, 35574001, 207448UL, "AYYELET HASHAHAR" },
+    { 411, 31264200, 34804500, 223172UL, "BEER SHEVA BGU" },
+    { 75, 31725000, 34976002, 91075UL, "BEIT JIMAL" },
+    { 58, 31271999, 34389000, 71870UL, "BESOR FARM" },
+    { 54, 32007000, 34813999, 68951UL, "BET DAGAN" },
+    { 228, 31805200, 35501000, 167486UL, "BET HAARAVA" },
+    { 6, 32880000, 35650400, 3804UL, "BET ZAYDA" },
+    { 499, 33227700, 35635000, 226107UL, "DAFNA" },
+    { 99, 32862000, 35374000, 112592UL, "DEIR HANNA" },
+    { 79, 31503600, 34648000, 99090UL, "DOROT" },
+    { 206, 32467998, 35488998, 147566UL, "EDEN FARM" },
+    { 64, 29553000, 34952000, 77726UL, "ELAT" },
+    { 73, 33064999, 35216999, 85912UL, "ELON" },
+    { 107, 32388000, 34938000, 117786UL, "EN HAHORESH" },
+    { 67, 32603001, 35096001, 83106UL, "EN HASHOFET" },
+    { 44, 32681000, 34959000, 60439UL, "EN KARMEL" },
+    { 205, 32884400, 35301500, 144768UL, "ESHHAR" },
+    { 338, 30791100, 34471500, 196627UL, "EZUZ" },
+    { 263, 32556400, 35072500, 184032UL, "GALED" },
+    { 227, 32905200, 35748700, 164640UL, "GAMLA" },
+    { 236, 31629999, 34791000, 175959UL, "GAT" },
+    { 30, 31997000, 35451000, 43721UL, "GILGAL" },
+    { 46, 32473000, 34882000, 66143UL, "HADERA PORT" },
+    { 121, 31791000, 34805000, 125361UL, "HAFEZ HAYYIM" },
+    { 41, 32803400, 35054800, 52172UL, "HAIFA REFINERIES" },
+    { 43, 32773600, 35022300, 57502UL, "HAIFA TECHNION" },
+    { 42, 32761002, 35021000, 54636UL, "HAIFA UNIVERSITY" },
+    { 275, 32130000, 34832400, 194371UL, "HAKFAR HAYAROK" },
+    { 24, 31944900, 35149900, 32450UL, "HAR HARASHA" },
+    { 269, 32956001, 35328999, 186425UL, "HARASHIM" },
+    { 33, 30778999, 35238998, 46565UL, "HAZEVA" },
+    { 90, 32159800, 35351300, 107040UL, "ITAMAR" },
+    { 23, 31781000, 35222000, 29556UL, "JERUSALEM CENTRE" },
+    { 22, 31770400, 35197300, 26567UL, "JERUSALEM GIVAT RAM" },
+    { 202, 33172001, 35612999, 141910UL, "KEFAR BLUM" },
+    { 241, 33240400, 35569600, 178344UL, "KEFAR GILADI" },
+    { 233, 32883300, 35579200, 173134UL, "KEFAR NAHUM" },
+    { 350, 31381200, 34872900, 205043UL, "LAHAV" },
     { 218, 31774000, 35296001, 158987UL, "MAALE ADUMMIM" },
     { 224, 32481000, 35415000, 161823UL, "MAALE GILBOA" },
-    { 227, 32905200, 35748700, 164640UL, "GAMLA" },
-    { 228, 31805200, 35501000, 167486UL, "BET HAARAVA" },
-    { 232, 30048000, 35023300, 170308UL, "NEOT SMADAR" },
-    { 233, 32883300, 35579200, 173134UL, "KEFAR NAHUM" },
-    { 236, 31629999, 34791000, 175959UL, "GAT" },
-    { 241, 33240400, 35569600, 178344UL, "KEFAR GILADI" },
-    { 259, 31834100, 34961600, 181177UL, "NAHSHON" },
-    { 263, 32556400, 35072500, 184032UL, "GALED" },
-    { 269, 32956001, 35328999, 186425UL, "HARASHIM" },
-    { 271, 30787600, 34771000, 188784UL, "AVDAT" },
-    { 274, 31731900, 34634800, 191575UL, "NIZZAN" },
-    { 275, 32130000, 34832400, 194371UL, "HAKFAR HAYAROK" },
-    { 338, 30791100, 34471500, 196627UL, "EZUZ" },
-    { 343, 32983600, 35092300, 199411UL, "SHAVE ZIYYON" },
-    { 349, 31205000, 34922700, 202243UL, "NEVATIM" },
-    { 350, 31381200, 34872900, 205043UL, "LAHAV" },
-    { 353, 33023998, 35574001, 207448UL, "AYYELET HASHAHAR" },
     { 355, 32683300, 35600800, 209879UL, "MASSADA" },
+    { 10, 33129002, 35805000, 9525UL, "MEROM GOLAN PICMAN" },
+    { 210, 31588100, 35391600, 156153UL, "METZOKE DRAGOT" },
+    { 259, 31834100, 34961600, 181177UL, "NAHSHON" },
+    { 82, 31659000, 34680000, 101918UL, "NEGBA" },
+    { 232, 30048000, 35023300, 170308UL, "NEOT SMADAR" },
+    { 25, 31690000, 34973999, 35285UL, "NETIV HALAMED HE" },
+    { 349, 31205000, 34922700, 202243UL, "NEVATIM" },
+    { 186, 32708000, 35178001, 136243UL, "NEWE YAAR" },
+    { 274, 31731900, 34634800, 191575UL, "NIZZAN" },
+    { 207, 30365999, 35147999, 150465UL, "PARAN" },
+    { 20, 32174999, 35096001, 20929UL, "QARNE SHOMERON" },
+    { 74, 31816600, 34724400, 88690UL, "QEVUZAT YAVNE" },
+    { 106, 33080600, 35107900, 114964UL, "ROSH HANIQRA" },
+    { 77, 31664000, 35123001, 93449UL, "ROSH ZURIM" },
+    { 98, 30870001, 34794998, 109780UL, "SEDE BOQER" },
     { 366, 32438999, 35511002, 212277UL, "SEDE ELIYYAHU" },
-    { 411, 31264200, 34804500, 223172UL, "BEER SHEVA BGU" },
-    { 499, 33227700, 35635000, 226107UL, "DAFNA" },
+    { 65, 31031000, 35391998, 80267UL, "SEDOM" },
+    { 28, 31357000, 35066002, 38158UL, "SHANI" },
+    { 343, 32983600, 35092300, 199411UL, "SHAVE ZIYYON" },
+    { 13, 32705002, 35405998, 15269UL, "TAVOR KADOORIE" },
+    { 178, 32058000, 34758800, 133404UL, "TEL AVIV COAST" },
+    { 11, 32698002, 35509998, 12426UL, "YAVNEEL" },
+    { 36, 29885000, 35077000, 49219UL, "YOTVATA" },
+    { 62, 32979999, 35507000, 74832UL, "ZEFAT HAR KENAAN" },
+    { 8, 32702000, 35584000, 6642UL, "ZEMAH" },
+    { 45, 32572400, 34954600, 63308UL, "ZIKHRON YAAQOV" },
+    { 112, 31070800, 34851300, 120210UL, "ZOMET HANEGEV" },
+    { 188, 31787800, 35125800, 139114UL, "ZOVA" },
 };
 #define IMS_STATION_COUNT (sizeof(imsStations) / sizeof(imsStations[0]))
+//**************************************************************************************************
+String imsStationOptions()
+{
+    String out;
+    out.reserve(2400);
+    out = "[[\"0\",\"Auto (nearest)\"]";
+    char name[28];
+    for (uint16_t i = 0; i < IMS_STATION_COUNT; i++)
+    {
+        const char* nm = (const char*) pgm_read_ptr(&imsStations[i].name);
+        strncpy_P(name, nm, sizeof(name) - 1);
+        name[sizeof(name) - 1] = 0;
+        out += ",[\"";
+        out += String(pgm_read_word(&imsStations[i].id));
+        out += "\",\"";
+        out += name;
+        out += "\"]";
+    }
+    out += "]";
+    return out;
+}
 String urlEncode(const char* s)
 {
     String out;
