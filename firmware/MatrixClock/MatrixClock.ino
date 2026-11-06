@@ -33,7 +33,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.12"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.13"   // shown on the settings page
 //#define REVERSE_HORIZONTAL
 //#define REVERSE_VERTICAL
 //***************************Web Settings Page**********************************************************************
@@ -973,6 +973,48 @@ void handleWeatherPage()
 {
     if (!webAuthOk()) { server.requestAuthentication(); return; }
     server.keepAlive(false);
+
+    if (server.arg("format") == "json")
+    {
+        double rainLimit = settings.rainThresh10 / 10.0;
+        bool dataForCity = weatherDataValid && strcmp(weatherDataCity, settings.weatherCity) == 0;
+        bool localFresh = settings.weatherSource != 0 && imsRainValid && (millis() - imsUpdatedMs < 2700000UL);
+        bool warning = false;
+        if (settings.rainWarn)
+        {
+            if (settings.weatherSource != 2 && dataForCity
+                && (weatherPrecipRate >= rainLimit || weatherRainPeak >= rainLimit)) warning = true;
+            if (localFresh && imsRainRate >= rainLimit) warning = true;
+        }
+        unsigned long omAge = dataForCity ? (millis() - weatherUpdatedMs) / 1000UL : 0;
+        unsigned long imsAge = imsRainValid ? (millis() - imsUpdatedMs) / 1000UL : 0;
+        String j;
+        j.reserve(800);
+        j = "{\"ok\":1,\"city\":\"" + jsonEsc(settings.weatherCity) + "\"";
+        j += ",\"source\":" + String(settings.weatherSource);
+        j += ",\"threshold\":" + String(settings.rainThresh10 / 10.0, 1);
+        j += ",\"rainWarn\":" + String(settings.rainWarn);
+        j += ",\"warning\":" + String(warning ? 1 : 0);
+        j += ",\"omValid\":" + String(dataForCity ? 1 : 0);
+        j += ",\"omNow\":" + String(weatherPrecipRate, 1);
+        j += ",\"omPeak\":" + String(weatherRainPeak, 1);
+        j += ",\"omTemp\":" + String(weatherTempC, 1);
+        j += ",\"omHum\":" + String(weatherHumidity);
+        j += ",\"omAge\":" + String(omAge);
+        j += ",\"imsEnabled\":" + String(settings.weatherSource != 0 ? 1 : 0);
+        j += ",\"imsValid\":" + String(imsRainValid ? 1 : 0);
+        j += ",\"imsStation\":\"" + jsonEsc(imsStationName) + "\"";
+        j += ",\"imsId\":" + String(imsStationId);
+        j += ",\"imsDistance\":" + String(imsStationDistanceKm, 1);
+        j += ",\"imsRate\":" + String(imsRainRate, 1);
+        j += ",\"imsTemp\":" + String(imsTempC, 1);
+        j += ",\"imsHum\":" + String(imsHumidity);
+        j += ",\"imsTime\":\"" + jsonEsc(imsObsTime) + "\"";
+        j += ",\"imsAge\":" + String(imsAge);
+        j += "}";
+        server.send(200, "application/json", j);
+        return;
+    }
 
     double rainLimit = settings.rainThresh10 / 10.0;
     bool dataForCity = weatherDataValid && strcmp(weatherDataCity, settings.weatherCity) == 0;
