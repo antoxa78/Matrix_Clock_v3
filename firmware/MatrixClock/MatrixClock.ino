@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.8"   // shown on the settings page
 //#define REVERSE_HORIZONTAL
 //#define REVERSE_VERTICAL
 //***************************Web Settings Page**********************************************************************
@@ -64,8 +64,8 @@ struct ClockSettings {
     uint16_t scrollDateInt;  // minutes between date scrolls (default 1 = every minute)
     uint8_t rainWarn;        // 0 = off, 1 = show RAIN WARNING when precipitation >= threshold
     uint8_t heatWarn;        // 0 = off, 1 = show HEAT WARNING when temperature >= threshold
-    uint8_t rainThresh;      // rain warning threshold in mm (default 2)
-    uint8_t heatThresh;      // heat warning threshold in °C (default 35)
+    uint8_t rainThresh;      // legacy whole-mm rain threshold (kept for older firmware)
+    uint8_t heatThresh;      // legacy whole-°C heat threshold (kept for older firmware)
     uint8_t digitAnim;       // digit change animation: 0=off, 1=roll, 2=flip, 3=wipe, 4=fade, 5=drop
     uint8_t weatherCityShow; // 0 = hide city name in weather message, 1 = show it
     uint8_t warnAnim;        // 0 = off, 1 = show a short rain/heat animation before the warning text
@@ -75,9 +75,12 @@ struct ClockSettings {
     uint8_t shabbatFreq;     // repeat Shabbat message every N minutes (5-60, default 10)
     uint8_t shabbatAnim;     // 0 = text only, 1 = candle / Star of David animation
     uint8_t holidayGreetings; // 0 = off, 1 = show New Year / Christmas / Hebrew holiday greetings
+    uint16_t rainThresh10;   // rain warning threshold in 0.1 mm (12 = 1.2 mm)
+    uint16_t heatThresh10;   // heat warning threshold in 0.1 °C (355 = 35.5 °C)
+    uint16_t threshFormat;   // 0xA55A when the tenths fields above are valid
 };
-ClockSettings settings = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 0, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1 };
-const ClockSettings settings_defaults = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 0, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1 };
+ClockSettings settings = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 0, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A };
+const ClockSettings settings_defaults = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 0, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A };
 bool rtcInitialized = false;
 bool apActive = false;              // AP fallback mode active (settings page accessible)
 bool apShutdownPending = false;     // stopAP ran; softAP shutdown deferred to a quieter moment
@@ -602,8 +605,21 @@ void settings_load()
     if (settings.scrollDateInt < 1 || settings.scrollDateInt > 120) { settings.scrollDateInt = 1; repaired = true; }   // new field -> every minute
     if (settings.rainWarn > 1) { settings.rainWarn = 1; repaired = true; }   // new field / garbage from old EEPROM -> on
     if (settings.heatWarn > 1) { settings.heatWarn = 1; repaired = true; }   // new field / garbage from old EEPROM -> on
-    if (settings.rainThresh < 1 || settings.rainThresh > 25) { settings.rainThresh = 2; repaired = true; }   // new field -> 2mm
-    if (settings.heatThresh < 20 || settings.heatThresh > 50) { settings.heatThresh = 35; repaired = true; }   // new field -> 35C
+    if (settings.rainThresh < 1 || settings.rainThresh > 25) { settings.rainThresh = 2; repaired = true; }   // legacy field -> 2mm
+    if (settings.heatThresh < 20 || settings.heatThresh > 50) { settings.heatThresh = 31; repaired = true; }   // legacy field -> 31C
+    if (settings.threshFormat != 0xA55A)   // settings saved by v5.7 or older: copy whole-number thresholds
+    {
+        settings.rainThresh10 = (uint16_t) settings.rainThresh * 10;
+        settings.heatThresh10 = (uint16_t) settings.heatThresh * 10;
+        settings.threshFormat = 0xA55A;
+        repaired = true;
+    }
+    if (settings.rainThresh10 < 1 || settings.rainThresh10 > 250) { settings.rainThresh10 = 20; repaired = true; }   // 0.1..25.0 mm
+    if (settings.heatThresh10 < 200 || settings.heatThresh10 > 500) { settings.heatThresh10 = 310; repaired = true; }   // 20.0..50.0 C
+    uint8_t rainWhole = (uint8_t) constrain((settings.rainThresh10 + 5) / 10, 1, 25);
+    uint8_t heatWhole = (uint8_t) constrain((settings.heatThresh10 + 5) / 10, 20, 50);
+    if (settings.rainThresh != rainWhole) { settings.rainThresh = rainWhole; repaired = true; }
+    if (settings.heatThresh != heatWhole) { settings.heatThresh = heatWhole; repaired = true; }
     if (settings.digitAnim > 5) { settings.digitAnim = 1; repaired = true; }   // new field / garbage from old EEPROM -> roll
     if (settings.weatherCityShow > 1) { settings.weatherCityShow = 1; repaired = true; }   // new field / garbage from old EEPROM -> show city
     if (settings.warnAnim > 1) { settings.warnAnim = 1; repaired = true; }   // new field / garbage from old EEPROM -> animation on
@@ -790,6 +806,13 @@ String jsonEsc(const char* s)   // escape special chars so saved values can't br
     return out;
 }
 //**************************************************************************************************
+String tenthsStr(uint16_t v)   // 12 -> "1.2" (used by the settings page and logs)
+{
+    char b[10];
+    snprintf(b, sizeof b, "%u.%u", (unsigned) (v / 10), (unsigned) (v % 10));
+    return String(b);
+}
+//**************************************************************************************************
 void sendChunked(int code, const char* contentType, const String& body)
     // ESP8266 lwIP can silently drop a TCP segment when a response is handed to the socket as one
     // large write() and never retransmit it -- which is why the settings page used to need several
@@ -898,9 +921,9 @@ void handleValues()
     j += "[\"Weather Interval (min)\",\"weatherInterval\",null,\"" + String(settings.weatherInterval) + "\"],";
     j += "[\"Weather Speed\",\"weatherSpeed\",[[\"1\",\"Slow\"],[\"2\",\"Norm\"],[\"3\",\"Fast\"],[\"4\",\"VFast\"]],\"" + String(settings.weatherSpeed) + "\"],";
     j += "[\"Rain Warning\",\"rainWarn\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.rainWarn) + "\"],";
-    j += "[\"Rain Threshold (mm, default 2)\",\"rainThresh\",null,\"" + String(settings.rainThresh) + "\"],";
+    j += "[\"Rain Threshold (mm, e.g. 1.2)\",\"rainThresh\",null,\"" + tenthsStr(settings.rainThresh10) + "\"],";
     j += "[\"Heat Warning\",\"heatWarn\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.heatWarn) + "\"],";
-    j += "[\"Heat Threshold (°C, default 35)\",\"heatThresh\",null,\"" + String(settings.heatThresh) + "\"],";
+    j += "[\"Heat Threshold (°C, e.g. 35.5)\",\"heatThresh\",null,\"" + tenthsStr(settings.heatThresh10) + "\"],";
     j += "[\"Warning Animation\",\"warnAnim\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.warnAnim) + "\"],";
     j += "[\"Shabbat Times\",\"shabbat\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.shabbat) + "\"],";
     j += "[\"Shabbat Message Frequency\",\"shabbatFreq\",[[\"5\",\"5 min\"],[\"10\",\"10 min\"],[\"15\",\"15 min\"],[\"20\",\"20 min\"],[\"30\",\"30 min\"],[\"60\",\"60 min\"]],\"" + String(settings.shabbatFreq) + "\"],";
@@ -967,10 +990,13 @@ void handleReset()
     settings.heatWarn = 1;
     settings.rainThresh = 2;
     settings.heatThresh = 31;
+    settings.rainThresh10 = 20;
+    settings.heatThresh10 = 310;
+    settings.threshFormat = 0xA55A;
     settings_save();
-    Serial.printf("Settings reset: NTP=%s rain=%d/%dmm heat=%d/%dC\r\n",
-                  settings.ntpServer, settings.rainWarn, settings.rainThresh,
-                  settings.heatWarn, settings.heatThresh);
+    Serial.printf("Settings reset: NTP=%s rain=%d/%smm heat=%d/%sC\r\n",
+                  settings.ntpServer, settings.rainWarn, tenthsStr(settings.rainThresh10).c_str(),
+                  settings.heatWarn, tenthsStr(settings.heatThresh10).c_str());
     server.keepAlive(false);
     server.send(200, "application/json", "{\"ok\":true,\"msg\":\"Settings reset. Rebooting...\"}");
     otaRebootAt = millis() + 2000UL;
@@ -1019,8 +1045,27 @@ void handleSave()
     settings.weatherSpeed = (uint8_t) constrain(server.arg("weatherSpeed").toInt(), 1, 4);
     settings.rainWarn = (uint8_t) (server.arg("rainWarn").toInt() ? 1 : 0);
     settings.heatWarn = (uint8_t) (server.arg("heatWarn").toInt() ? 1 : 0);
-    settings.rainThresh = (uint8_t) constrain(server.arg("rainThresh").toInt(), 1, 25);
-    settings.heatThresh = (uint8_t) constrain(server.arg("heatThresh").toInt(), 20, 50);
+    String rainArg = server.arg("rainThresh");
+    rainArg.replace(',', '.');   // accept 1,2 as well as 1.2
+    float rainVal = rainArg.toFloat();
+    if (rainVal > 0)
+    {
+        if (rainVal < 0.1f) rainVal = 0.1f;
+        if (rainVal > 25.0f) rainVal = 25.0f;
+        settings.rainThresh10 = (uint16_t) (rainVal * 10.0f + 0.5f);
+    }
+    String heatArg = server.arg("heatThresh");
+    heatArg.replace(',', '.');
+    float heatVal = heatArg.toFloat();
+    if (heatVal > 0)
+    {
+        if (heatVal < 20.0f) heatVal = 20.0f;
+        if (heatVal > 50.0f) heatVal = 50.0f;
+        settings.heatThresh10 = (uint16_t) (heatVal * 10.0f + 0.5f);
+    }
+    settings.rainThresh = (uint8_t) constrain((settings.rainThresh10 + 5) / 10, 1, 25);   // keep legacy field in sync
+    settings.heatThresh = (uint8_t) constrain((settings.heatThresh10 + 5) / 10, 20, 50);
+    settings.threshFormat = 0xA55A;
     if (server.hasArg("warnAnim")) settings.warnAnim = (uint8_t) (server.arg("warnAnim").toInt() ? 1 : 0);
     if (server.hasArg("shabbat")) settings.shabbat = (uint8_t) (server.arg("shabbat").toInt() ? 1 : 0);
     if (server.hasArg("shabbatFreq")) settings.shabbatFreq = (uint8_t) constrain(server.arg("shabbatFreq").toInt(), 5, 60);
@@ -2746,7 +2791,7 @@ void setup() {
     digitalWrite(CS, HIGH);
     Serial.begin(115200);
     settings_load();              // load saved settings from EEPROM
-    Serial.printf("Settings loaded: SSID:%s PSW:%s NTP:%s TZ:%d BR:%d ORIENT:%d DST:%d COLON:%d DIGANIM:%d MARQ:%d PULSE:%d NTPINT:%d WEATHER:%d WCITY:%s WCITYSHOW:%d WINT:%d WSPEED:%d SDINT:%d RWARN:%d HWARN:%d RTHR:%d HTHR:%d WARNANIM:%d SHABBAT:%d SLEAD:%d SFREQ:%d SANIM:%d HOLIDAY:%d WPAUTH:%s\r\n", settings.ssid, passHidden(settings.pass), settings.ntpServer, settings.tzOffset, settings.brightness, settings.orient, settings.dstRule, settings.colonAnim, settings.digitAnim, settings.marquee, settings.pulse, settings.ntpInterval, settings.weather, settings.weatherCity, settings.weatherCityShow, settings.weatherInterval, settings.weatherSpeed, settings.scrollDateInt, settings.rainWarn, settings.heatWarn, settings.rainThresh, settings.heatThresh, settings.warnAnim, settings.shabbat, settings.shabbatLead, settings.shabbatFreq, settings.shabbatAnim, settings.holidayGreetings, settings.webPass[0] ? "set" : "none");
+    Serial.printf("Settings loaded: SSID:%s PSW:%s NTP:%s TZ:%d BR:%d ORIENT:%d DST:%d COLON:%d DIGANIM:%d MARQ:%d PULSE:%d NTPINT:%d WEATHER:%d WCITY:%s WCITYSHOW:%d WINT:%d WSPEED:%d SDINT:%d RWARN:%d HWARN:%d RTHR:%d.%d HTHR:%d.%d WARNANIM:%d SHABBAT:%d SLEAD:%d SFREQ:%d SANIM:%d HOLIDAY:%d WPAUTH:%s\r\n", settings.ssid, passHidden(settings.pass), settings.ntpServer, settings.tzOffset, settings.brightness, settings.orient, settings.dstRule, settings.colonAnim, settings.digitAnim, settings.marquee, settings.pulse, settings.ntpInterval, settings.weather, settings.weatherCity, settings.weatherCityShow, settings.weatherInterval, settings.weatherSpeed, settings.scrollDateInt, settings.rainWarn, settings.heatWarn, settings.rainThresh10 / 10, settings.rainThresh10 % 10, settings.heatThresh10 / 10, settings.heatThresh10 % 10, settings.warnAnim, settings.shabbat, settings.shabbatLead, settings.shabbatFreq, settings.shabbatAnim, settings.holidayGreetings, settings.webPass[0] ? "set" : "none");
     if (!settings.weather)
         Serial.println("Weather: disabled in settings");
     else if (strlen(settings.weatherCity) == 0)
@@ -2933,16 +2978,18 @@ void loop() {
                 int wmoCode;
                 if (fetchWeather(temp, hum, precip, rainNext, wmoCode))
                 {
-                    Serial.printf("Weather check: %.1fC (heat %s, limit %d), now %.1fmm next %.1fmm (rain %s, limit %d, code %d)\r\n",
-                                  temp, settings.heatWarn ? "on" : "off", settings.heatThresh,
-                                  precip, rainNext, settings.rainWarn ? "on" : "off", settings.rainThresh, wmoCode);
+                    double rainLimit = settings.rainThresh10 / 10.0;
+                    double heatLimit = settings.heatThresh10 / 10.0;
+                    Serial.printf("Weather check: %.1fC (heat %s, limit %.1f), now %.1fmm next %.1fmm (rain %s, limit %.1f, code %d)\r\n",
+                                  temp, settings.heatWarn ? "on" : "off", heatLimit,
+                                  precip, rainNext, settings.rainWarn ? "on" : "off", rainLimit, wmoCode);
                     char buf[140];
                     uint8_t alertType = ALERT_ANIM_NONE;
                     bool rainingNow = (wmoCode >= 51 && wmoCode <= 67)
                                    || (wmoCode >= 80 && wmoCode <= 82)
                                    || (wmoCode >= 95 && wmoCode <= 99);
-                    bool rainNow = settings.rainWarn && rainingNow && precip >= settings.rainThresh;
-                    bool rainSoon = settings.rainWarn && rainNext >= settings.rainThresh;
+                    bool rainNow = settings.rainWarn && rainingNow && precip >= rainLimit;
+                    bool rainSoon = settings.rainWarn && rainNext >= rainLimit;
                     if (rainNow || rainSoon)
                     {
                         alertType = ALERT_ANIM_RAIN;
@@ -2955,13 +3002,13 @@ void loop() {
                             snprintf(buf, sizeof buf, "RAIN WARNING: NOW %.1fmm NEXT 2H %.1fmm Outside Temp: %.1fC, Humidity: %d%%",
                                      precip, rainNext, temp, hum);
                     }
-                    else if (settings.heatWarn && temp >= settings.heatThresh)
+                    else if (settings.heatWarn && temp >= heatLimit)
                     {
                         alertType = ALERT_ANIM_HEAT;
                         if (settings.weatherCityShow)
-                            snprintf(buf, sizeof buf, "HEAT WARNING: %.0fC %s Outside Temp: %.1fC, Humidity: %d%%", temp, settings.weatherCity, temp, hum);
+                            snprintf(buf, sizeof buf, "HEAT WARNING: %.1fC %s Outside Temp: %.1fC, Humidity: %d%%", heatLimit, settings.weatherCity, temp, hum);
                         else
-                            snprintf(buf, sizeof buf, "HEAT WARNING: %.0fC Outside Temp: %.1fC, Humidity: %d%%", temp, temp, hum);
+                            snprintf(buf, sizeof buf, "HEAT WARNING: %.1fC Outside Temp: %.1fC, Humidity: %d%%", heatLimit, temp, hum);
                     }
                     else
                     {
