@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.8"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.9"   // shown on the settings page
 //#define REVERSE_HORIZONTAL
 //#define REVERSE_VERTICAL
 //***************************Web Settings Page**********************************************************************
@@ -173,6 +173,14 @@ char alertAnimMsg[120] = "";
 const unsigned long ALERT_ANIM_MS = 2500UL;   // 2.5 s at the 50 ms frame rate
 bool weatherAlertActive = false;              // rain/heat warning owns the display
 bool weatherAlertMsgActive = false;           // the warning text itself is scrolling
+bool weatherDataValid = false;                // last weather fetch succeeded
+float weatherTempC = 0;
+float weatherPrecipRate = 0;                  // current rain rate, mm/h
+float weatherRainPeak = 0;                    // peak rain rate in the next 2 h, mm/h
+int weatherHumidity = 0;
+int weatherCode = 0;
+unsigned long weatherUpdatedMs = 0;
+char weatherDataCity[sizeof(settings.weatherCity)] = "";
 bool f_tckr1s = false;
 bool f_tckr50ms = false;
 bool kk;
@@ -921,7 +929,7 @@ void handleValues()
     j += "[\"Weather Interval (min)\",\"weatherInterval\",null,\"" + String(settings.weatherInterval) + "\"],";
     j += "[\"Weather Speed\",\"weatherSpeed\",[[\"1\",\"Slow\"],[\"2\",\"Norm\"],[\"3\",\"Fast\"],[\"4\",\"VFast\"]],\"" + String(settings.weatherSpeed) + "\"],";
     j += "[\"Rain Warning\",\"rainWarn\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.rainWarn) + "\"],";
-    j += "[\"Rain Threshold (mm, e.g. 1.2)\",\"rainThresh\",null,\"" + tenthsStr(settings.rainThresh10) + "\"],";
+    j += "[\"Rain Threshold (mm/h, e.g. 1.2)\",\"rainThresh\",null,\"" + tenthsStr(settings.rainThresh10) + "\"],";
     j += "[\"Heat Warning\",\"heatWarn\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.heatWarn) + "\"],";
     j += "[\"Heat Threshold (°C, e.g. 35.5)\",\"heatThresh\",null,\"" + tenthsStr(settings.heatThresh10) + "\"],";
     j += "[\"Warning Animation\",\"warnAnim\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.warnAnim) + "\"],";
@@ -932,6 +940,84 @@ void handleValues()
     j += "[\"Holiday Greetings\",\"holidayGreetings\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.holidayGreetings) + "\"]";
     j += "]}";
     sendChunked(200, "application/json", j);
+}
+//**************************************************************************************************
+void handleWeatherPage()
+{
+    if (!webAuthOk()) { server.requestAuthentication(); return; }
+    server.keepAlive(false);
+
+    double rainLimit = settings.rainThresh10 / 10.0;
+    bool dataForCity = weatherDataValid && strcmp(weatherDataCity, settings.weatherCity) == 0;
+    bool warning = dataForCity && settings.rainWarn
+                && (weatherPrecipRate >= rainLimit || weatherRainPeak >= rainLimit);
+    unsigned long age = dataForCity ? (millis() - weatherUpdatedMs) / 1000UL : 0;
+
+    String page;
+    page.reserve(2400);
+    page += "<!DOCTYPE html><html><head><meta charset=utf-8>"
+            "<meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<meta name=theme-color content='#0a0d0b'>"
+            "<meta http-equiv=refresh content=30>"
+            "<title>MatrixClock Weather</title><style>"
+            ":root{--bg:#0a0d0b;--panel:#121614;--line:#232a26;--accent:#22e07a;--text:#e8f0ec;--sub:#7c8c84}"
+            "*{box-sizing:border-box}body{margin:0;background:radial-gradient(900px 420px at 50% -10%,#10241a 0,var(--bg) 62%);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;min-height:100vh;padding:22px 16px}"
+            ".wrap{max-width:440px;margin:0 auto}h1{font-size:20px;text-align:center;margin:4px 0 6px;color:var(--accent)}"
+            ".city{text-align:center;color:var(--sub);font-size:13px;margin:0 0 18px}"
+            "table{width:100%;border-collapse:collapse;background:linear-gradient(180deg,#171c19,#121614);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,.18)}"
+            "td{padding:12px 14px;border-bottom:1px solid var(--line);font-size:14px}tr:last-child td{border-bottom:none}"
+            "td:first-child{color:var(--sub)}td:last-child{text-align:right;font-weight:600}"
+            ".yes{color:var(--accent)}.no{color:var(--sub)}.big{font-size:16px}"
+            ".note{font-size:12px;line-height:1.6;color:var(--sub);margin:16px 0}.note a{color:var(--accent);text-decoration:none}"
+            "</style></head><body><div class=wrap><h1>Rain / Weather</h1><div class=city>";
+    page += settings.weatherCity[0] ? settings.weatherCity : "No weather city configured";
+    page += "</div><table>";
+
+    if (!settings.weather || settings.weatherCity[0] == 0)
+        page += "<tr><td>Status</td><td class=no>Weather is off</td></tr>";
+    else if (!dataForCity)
+    {
+        page += "<tr><td>Status</td><td class=no>Waiting for first check</td></tr>";
+        page += "<tr><td>First check</td><td>15 seconds after boot</td></tr>";
+    }
+    else
+    {
+        char row[80];
+        page += "<tr><td>Rain now</td><td class=big>";
+        page += String(weatherPrecipRate, 1);
+        page += " mm/h</td></tr><tr><td>Next 2h peak</td><td class=big>";
+        page += String(weatherRainPeak, 1);
+        page += " mm/h</td></tr><tr><td>Your threshold</td><td>";
+        page += tenthsStr(settings.rainThresh10);
+        page += " mm/h</td></tr><tr><td>Rain warning</td><td class=";
+        if (!settings.rainWarn) page += "no>Off";
+        else if (warning) page += "yes>WOULD TRIGGER";
+        else page += "no>Not triggered";
+        page += "</td></tr><tr><td>Temperature</td><td>";
+        page += String(weatherTempC, 1);
+        page += " &deg;C</td></tr><tr><td>Humidity</td><td>";
+        page += String(weatherHumidity);
+        page += " %</td></tr><tr><td>Weather code</td><td>";
+        page += String(weatherCode);
+        page += "</td></tr><tr><td>Last check</td><td>";
+        snprintf(row, sizeof row, "%lu s ago", age);
+        page += row;
+        page += "</td></tr>";
+    }
+    page += "</table><div class=note>";
+    if (settings.weather)
+    {
+        page += "The clock checks every ";
+        page += String(settings.weatherInterval);
+        page += " min. It warns when the current rain rate or the peak rate "
+                "forecast for the next 2 hours reaches your threshold. This page "
+                "refreshes every 30 seconds.<br><br>"
+                "Data comes from Open-Meteo model forecasts, not a local rain gauge. "
+                "Outside central Europe and North America the 15-minute values are "
+                "interpolated from hourly model data.";
+    }
+    page += "<a href='/'>Back to settings</a></div></div></body></html>";
+    sendChunked(200, "text/html", page);
 }
 //**************************************************************************************************
 void handleStatus()
@@ -1353,36 +1439,50 @@ bool fetchWeather(double& temp, int& hum, double& precip, double& rainNext, int&
     snprintf(lonbuf, sizeof lonbuf, "%.5f", settings.weatherLon / 1000000.0);
     String url = String("http://api.open-meteo.com/v1/forecast?latitude=") + latbuf + "&longitude=" + lonbuf
                + "&current=temperature_2m,relative_humidity_2m,precipitation,weather_code"
-               + "&hourly=precipitation&forecast_hours=2";
+               + "&minutely_15=precipitation,weather_code&forecast_minutely_15=8";
     String resp;
     if (!httpGet(url, resp)) { Serial.println("Weather: forecast request failed"); return false; }
     temp = jsonDoubleAfter(resp, "\"temperature_2m\":");
     hum = (int) jsonDoubleAfter(resp, "\"relative_humidity_2m\":");
     int curSec = resp.indexOf("\"current\":");
     int precipKey = (curSec >= 0) ? resp.indexOf("\"precipitation\":", curSec) : -1;
-    precip = (precipKey >= 0) ? atof(resp.c_str() + precipKey + (int) strlen("\"precipitation\":")) : 0;
-    wmoCode = (int) jsonDoubleAfter(resp, "\"weather_code\":");
-    // max precipitation over the next two hourly steps (mm per hour)
+    double precipRaw = (precipKey >= 0) ? atof(resp.c_str() + precipKey + (int) strlen("\"precipitation\":")) : 0;
+    int interval = (int) jsonDoubleAfter(resp, "\"interval\":");   // current value is a 15-min sum
+    if (interval <= 0) interval = 900;
+    precip = precipRaw * 3600.0 / interval;   // normalize to mm/h so it matches the threshold
+    int wmoKey = (curSec >= 0) ? resp.indexOf("\"weather_code\":", curSec) : -1;
+    wmoCode = (wmoKey >= 0) ? (int) atof(resp.c_str() + wmoKey + (int) strlen("\"weather_code\":")) : 0;
+    // Peak rain rate over the next two hours. The 15-min values are sums, so
+    // multiply by 4 to get mm/h; this also gives a rolling 2-hour window.
     rainNext = 0;
-    int hp = resp.indexOf("\"hourly\":");
-    if (hp >= 0)
+    int mp = resp.indexOf("\"minutely_15\":");
+    if (mp >= 0)
     {
-        hp = resp.indexOf("\"precipitation\":[", hp);
-        if (hp >= 0)
+        mp = resp.indexOf("\"precipitation\":[", mp);
+        if (mp >= 0)
         {
-            hp += (int) strlen("\"precipitation\":[");
-            int end = resp.indexOf(']', hp);
-            for (int i = 0; i < 2 && hp < end; i++)
+            mp += (int) strlen("\"precipitation\":[");
+            int end = resp.indexOf(']', mp);
+            for (int i = 0; i < 8 && mp < end; i++)
             {
-                double v = atof(resp.c_str() + hp);
+                double v = atof(resp.c_str() + mp) * 4.0;
                 if (v > rainNext) rainNext = v;
-                int comma = resp.indexOf(',', hp);
+                int comma = resp.indexOf(',', mp);
                 if (comma < 0 || comma >= end) break;
-                hp = comma + 1;
+                mp = comma + 1;
             }
         }
     }
-    Serial.printf("Weather: %.1fC %d%% now %.1fmm next %.1fmm code %d\r\n", temp, hum, precip, rainNext, wmoCode);
+    Serial.printf("Weather: %.1fC %d%% now %.1fmm/h peak2h %.1fmm/h code %d\r\n", temp, hum, precip, rainNext, wmoCode);
+    weatherTempC = (float) temp;
+    weatherHumidity = hum;
+    weatherPrecipRate = (float) precip;
+    weatherRainPeak = (float) rainNext;
+    weatherCode = wmoCode;
+    weatherUpdatedMs = millis();
+    strncpy(weatherDataCity, settings.weatherCity, sizeof(weatherDataCity) - 1);
+    weatherDataCity[sizeof(weatherDataCity) - 1] = 0;
+    weatherDataValid = true;
     return true;
 }
 //**************************************************************************************************
@@ -2826,6 +2926,7 @@ void setup() {
     server.on("/", handleRoot);
     server.on("/v", HTTP_GET, handleValues);   // settings values JSON (single-segment response, like /)
     server.on("/status", HTTP_GET, handleStatus);   // live heap/WiFi/OTA diagnostics
+    server.on("/weather", HTTP_GET, handleWeatherPage);   // last rain/weather values vs threshold
     server.on("/scan", HTTP_GET, handleScan);       // WiFi network scan for the settings page
     server.on("/reset", HTTP_POST, handleReset);    // restore factory defaults
     server.on("/save", HTTP_POST, handleSave);   // POST only: a later GET/refresh on /save must NOT re-run the save
@@ -2980,26 +3081,23 @@ void loop() {
                 {
                     double rainLimit = settings.rainThresh10 / 10.0;
                     double heatLimit = settings.heatThresh10 / 10.0;
-                    Serial.printf("Weather check: %.1fC (heat %s, limit %.1f), now %.1fmm next %.1fmm (rain %s, limit %.1f, code %d)\r\n",
+                    Serial.printf("Weather check: %.1fC (heat %s, limit %.1f), now %.1fmm/h peak2h %.1fmm/h (rain %s, limit %.1f, code %d)\r\n",
                                   temp, settings.heatWarn ? "on" : "off", heatLimit,
                                   precip, rainNext, settings.rainWarn ? "on" : "off", rainLimit, wmoCode);
-                    char buf[140];
+                    char buf[160];
                     uint8_t alertType = ALERT_ANIM_NONE;
-                    bool rainingNow = (wmoCode >= 51 && wmoCode <= 67)
-                                   || (wmoCode >= 80 && wmoCode <= 82)
-                                   || (wmoCode >= 95 && wmoCode <= 99);
-                    bool rainNow = settings.rainWarn && rainingNow && precip >= rainLimit;
+                    bool rainNow = settings.rainWarn && precip >= rainLimit;
                     bool rainSoon = settings.rainWarn && rainNext >= rainLimit;
                     if (rainNow || rainSoon)
                     {
                         alertType = ALERT_ANIM_RAIN;
-                        // Show the current value received from Open-Meteo plus the next-2h
-                        // forecast maximum, so the warning always shows the actual internet data.
+                        // Show the current rate received from Open-Meteo plus the peak
+                        // rate forecast for the next two hours.
                         if (settings.weatherCityShow)
-                            snprintf(buf, sizeof buf, "RAIN WARNING: NOW %.1fmm NEXT 2H %.1fmm %s Outside Temp: %.1fC, Humidity: %d%%",
+                            snprintf(buf, sizeof buf, "RAIN WARNING: NOW %.1fmm/h NEXT 2H PEAK %.1fmm/h %s Outside Temp: %.1fC, Humidity: %d%%",
                                      precip, rainNext, settings.weatherCity, temp, hum);
                         else
-                            snprintf(buf, sizeof buf, "RAIN WARNING: NOW %.1fmm NEXT 2H %.1fmm Outside Temp: %.1fC, Humidity: %d%%",
+                            snprintf(buf, sizeof buf, "RAIN WARNING: NOW %.1fmm/h NEXT 2H PEAK %.1fmm/h Outside Temp: %.1fC, Humidity: %d%%",
                                      precip, rainNext, temp, hum);
                     }
                     else if (settings.heatWarn && temp >= heatLimit)
