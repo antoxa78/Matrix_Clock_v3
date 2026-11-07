@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.3.0"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.3.1"   // shown on the settings page
 
 // Rain warning tuning. The current rain rate uses settings.rainThresh10;
 // these values control the forecast-based part of the warning.
@@ -915,7 +915,7 @@ void startNtpMessage(tm* tt)   // show the time that was actually synced
         return;
     }
     char b[32];
-    snprintf(b, sizeof b, "NTP OK! %02d:%02d", tt->tm_hour, tt->tm_min);
+    snprintf(b, sizeof b, "NTP OK!! %02d:%02d", tt->tm_hour, tt->tm_min);
     startMsg(b);
 }
 //**************************************************************************************************
@@ -3590,28 +3590,28 @@ void loop() {
                             // Hysteresis: keep the warning for one dry check, but say
                             // clearly that the rain has stopped.
                             if (settings.weatherCityShow)
-                                snprintf(buf, sizeof buf, "RAIN ENDING: LAST %.1fmm/h, LAST 1H %.1fmm %d%% %s Outside Temp: %.1fC, Humidity: %d%%",
+                                snprintf(buf, sizeof buf, "RAIN ENDING  LAST %.1fMM/H  1H %.1fMM  CHANCE %d%%  %s T%.1fC RH%d%%  ",
                                          weatherRainLastRate, weatherRainLast1h, weatherRainLastProb, settings.weatherCity, temp, hum);
                             else
-                                snprintf(buf, sizeof buf, "RAIN ENDING: LAST %.1fmm/h, LAST 1H %.1fmm %d%% Outside Temp: %.1fC, Humidity: %d%%",
+                                snprintf(buf, sizeof buf, "RAIN ENDING  LAST %.1fMM/H  1H %.1fMM  CHANCE %d%%  T%.1fC RH%d%%  ",
                                          weatherRainLastRate, weatherRainLast1h, weatherRainLastProb, temp, hum);
                         }
                         else if (rainNow || rainCodeNow)
                         {
                             if (settings.weatherCityShow)
-                                snprintf(buf, sizeof buf, "RAIN WARNING: NOW %.1fmm/h 1H %.1fmm 2H %.1fmm %d%% %s Outside Temp: %.1fC, Humidity: %d%%",
+                                snprintf(buf, sizeof buf, "RAIN WARNING!!!  NOW %.1fMM/H  1H %.1fMM  2H %.1fMM  CHANCE %d%%  %s T%.1fC RH%d%%  ",
                                          precip, rain1h, rain2h, prob2h, settings.weatherCity, temp, hum);
                             else
-                                snprintf(buf, sizeof buf, "RAIN WARNING: NOW %.1fmm/h 1H %.1fmm 2H %.1fmm %d%% Outside Temp: %.1fC, Humidity: %d%%",
+                                snprintf(buf, sizeof buf, "RAIN WARNING!!!  NOW %.1fMM/H  1H %.1fMM  2H %.1fMM  CHANCE %d%%  T%.1fC RH%d%%  ",
                                          precip, rain1h, rain2h, prob2h, temp, hum);
                         }
                         else
                         {
                             if (settings.weatherCityShow)
-                                snprintf(buf, sizeof buf, "RAIN LIKELY: 1H %.1fmm 2H %.1fmm %d%% %s Outside Temp: %.1fC, Humidity: %d%%",
+                                snprintf(buf, sizeof buf, "RAIN LIKELY  1H %.1fMM  2H %.1fMM  CHANCE %d%%  %s T%.1fC RH%d%%  ",
                                          rain1h, rain2h, prob2h, settings.weatherCity, temp, hum);
                             else
-                                snprintf(buf, sizeof buf, "RAIN LIKELY: 1H %.1fmm 2H %.1fmm %d%% Outside Temp: %.1fC, Humidity: %d%%",
+                                snprintf(buf, sizeof buf, "RAIN LIKELY  1H %.1fMM  2H %.1fMM  CHANCE %d%%  T%.1fC RH%d%%  ",
                                          rain1h, rain2h, prob2h, temp, hum);
                         }
                     }
