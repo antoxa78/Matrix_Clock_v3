@@ -25,7 +25,6 @@
 #include <EEPROM.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPClient.h>
-#include <WiFiClientSecure.h>
 #include "WebPage.h"
 
 #define SDA        5      // Pin sda (I2C)
@@ -33,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.21"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.22"   // shown on the settings page
 //#define REVERSE_HORIZONTAL
 //#define REVERSE_VERTICAL
 //***************************Web Settings Page**********************************************************************
@@ -79,12 +78,9 @@ struct ClockSettings {
     uint16_t rainThresh10;   // rain warning threshold in 0.1 mm (12 = 1.2 mm)
     uint16_t heatThresh10;   // heat warning threshold in 0.1 °C (355 = 35.5 °C)
     uint16_t threshFormat;   // 0xA55A when the tenths fields above are valid
-    uint8_t weatherSource;   // 0 = Open-Meteo, 1 = IMS + Open-Meteo, 2 = IMS only
-    uint16_t imsStation;     // IMS station ID, 0 = nearest to Weather City
-    uint16_t imsFormat;      // 0xBEEF when the IMS fields above are valid
 };
-ClockSettings settings = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 0, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 0, 0, 0xBEEF };
-const ClockSettings settings_defaults = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 0, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 0, 0, 0xBEEF };
+ClockSettings settings = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 0, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A };
+const ClockSettings settings_defaults = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 0, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A };
 bool rtcInitialized = false;
 bool apActive = false;              // AP fallback mode active (settings page accessible)
 bool apShutdownPending = false;     // stopAP ran; softAP shutdown deferred to a quieter moment
@@ -185,17 +181,6 @@ int weatherHumidity = 0;
 int weatherCode = 0;
 unsigned long weatherUpdatedMs = 0;
 char weatherDataCity[sizeof(settings.weatherCity)] = "";
-bool imsRainValid = false;
-float imsRainRate = 0;                       // local station rain rate, mm/h
-float imsTempC = 0;
-int imsHumidity = 0;
-bool imsTempValid = false;
-bool imsHumValid = false;
-unsigned long imsUpdatedMs = 0;
-char imsObsTime[24] = "";
-uint16_t imsStationId = 0;
-char imsStationName[28] = "";
-float imsStationDistanceKm = 0;
 bool f_tckr1s = false;
 bool f_tckr50ms = false;
 bool kk;
@@ -637,15 +622,6 @@ void settings_load()
         settings.threshFormat = 0xA55A;
         repaired = true;
     }
-    if (settings.imsFormat != 0xBEEF)   // settings saved by v5.9 or older
-    {
-        settings.weatherSource = 0;
-        settings.imsStation = 0;
-        settings.imsFormat = 0xBEEF;
-        repaired = true;
-    }
-    if (settings.weatherSource > 2) { settings.weatherSource = 0; repaired = true; }
-    if (settings.imsStation > 9999) { settings.imsStation = 0; repaired = true; }
     if (settings.rainThresh10 < 1 || settings.rainThresh10 > 250) { settings.rainThresh10 = 20; repaired = true; }   // 0.1..25.0 mm
     if (settings.heatThresh10 < 200 || settings.heatThresh10 > 500) { settings.heatThresh10 = 310; repaired = true; }   // 20.0..50.0 C
     uint8_t rainWhole = (uint8_t) constrain((settings.rainThresh10 + 5) / 10, 1, 25);
@@ -844,7 +820,6 @@ String tenthsStr(uint16_t v)   // 12 -> "1.2" (used by the settings page and log
     snprintf(b, sizeof b, "%u.%u", (unsigned) (v / 10), (unsigned) (v % 10));
     return String(b);
 }
-String imsStationOptions();   // defined with the IMS station table below
 //**************************************************************************************************
 void sendChunked(int code, const char* contentType, const String& body)
     // ESP8266 lwIP can silently drop a TCP segment when a response is handed to the socket as one
@@ -955,8 +930,6 @@ void handleValues()
     j += "[\"Weather Speed\",\"weatherSpeed\",[[\"1\",\"Slow\"],[\"2\",\"Norm\"],[\"3\",\"Fast\"],[\"4\",\"VFast\"]],\"" + String(settings.weatherSpeed) + "\"],";
     j += "[\"Rain Warning\",\"rainWarn\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.rainWarn) + "\"],";
     j += "[\"Rain Threshold (mm/h, e.g. 1.2)\",\"rainThresh\",null,\"" + tenthsStr(settings.rainThresh10) + "\"],";
-    j += "[\"Weather Source\",\"weatherSource\",[[\"0\",\"Open-Meteo\"],[\"1\",\"IMS + Open-Meteo\"],[\"2\",\"IMS only\"]],\"" + String(settings.weatherSource) + "\"],";
-    j += "[\"IMS Station\",\"imsStation\"," + imsStationOptions() + ",\"" + String(settings.imsStation) + "\"],";
     j += "[\"Heat Warning\",\"heatWarn\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.heatWarn) + "\"],";
     j += "[\"Heat Threshold (°C, e.g. 35.5)\",\"heatThresh\",null,\"" + tenthsStr(settings.heatThresh10) + "\"],";
     j += "[\"Warning Animation\",\"warnAnim\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.warnAnim) + "\"],";
@@ -980,20 +953,12 @@ void handleWeatherPage()
     {
         double rainLimit = settings.rainThresh10 / 10.0;
         bool dataForCity = weatherDataValid && strcmp(weatherDataCity, settings.weatherCity) == 0;
-        bool localFresh = settings.weatherSource != 0 && imsRainValid && (millis() - imsUpdatedMs < 2700000UL);
-        bool warning = false;
-        if (settings.rainWarn)
-        {
-            if (settings.weatherSource != 2 && dataForCity
-                && (weatherPrecipRate >= rainLimit || weatherRainPeak >= rainLimit)) warning = true;
-            if (localFresh && imsRainRate >= rainLimit) warning = true;
-        }
+        bool warning = dataForCity && settings.rainWarn
+                    && (weatherPrecipRate >= rainLimit || weatherRainPeak >= rainLimit);
         unsigned long omAge = dataForCity ? (millis() - weatherUpdatedMs) / 1000UL : 0;
-        unsigned long imsAge = imsRainValid ? (millis() - imsUpdatedMs) / 1000UL : 0;
         String j;
-        j.reserve(800);
+        j.reserve(520);
         j = "{\"ok\":1,\"city\":\"" + jsonEsc(settings.weatherCity) + "\"";
-        j += ",\"source\":" + String(settings.weatherSource);
         j += ",\"threshold\":" + String(settings.rainThresh10 / 10.0, 1);
         j += ",\"rainWarn\":" + String(settings.rainWarn);
         j += ",\"warning\":" + String(warning ? 1 : 0);
@@ -1003,16 +968,6 @@ void handleWeatherPage()
         j += ",\"omTemp\":" + String(weatherTempC, 1);
         j += ",\"omHum\":" + String(weatherHumidity);
         j += ",\"omAge\":" + String(omAge);
-        j += ",\"imsEnabled\":" + String(settings.weatherSource != 0 ? 1 : 0);
-        j += ",\"imsValid\":" + String(imsRainValid ? 1 : 0);
-        j += ",\"imsStation\":\"" + jsonEsc(imsStationName) + "\"";
-        j += ",\"imsId\":" + String(imsStationId);
-        j += ",\"imsDistance\":" + String(imsStationDistanceKm, 1);
-        j += ",\"imsRate\":" + String(imsRainRate, 1);
-        j += ",\"imsTemp\":" + String(imsTempC, 1);
-        j += ",\"imsHum\":" + String(imsHumidity);
-        j += ",\"imsTime\":\"" + jsonEsc(imsObsTime) + "\"";
-        j += ",\"imsAge\":" + String(imsAge);
         j += "}";
         server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
         server.sendHeader("Pragma", "no-cache");
@@ -1022,16 +977,9 @@ void handleWeatherPage()
 
     double rainLimit = settings.rainThresh10 / 10.0;
     bool dataForCity = weatherDataValid && strcmp(weatherDataCity, settings.weatherCity) == 0;
-    bool localFresh = settings.weatherSource != 0 && imsRainValid && (millis() - imsUpdatedMs < 2700000UL);
-    bool warning = false;
-    if (settings.rainWarn)
-    {
-        if (settings.weatherSource != 2 && dataForCity
-            && (weatherPrecipRate >= rainLimit || weatherRainPeak >= rainLimit)) warning = true;
-        if (localFresh && imsRainRate >= rainLimit) warning = true;
-    }
+    bool warning = dataForCity && settings.rainWarn
+                && (weatherPrecipRate >= rainLimit || weatherRainPeak >= rainLimit);
     unsigned long age = dataForCity ? (millis() - weatherUpdatedMs) / 1000UL : 0;
-    unsigned long localAge = imsRainValid ? (millis() - imsUpdatedMs) / 1000UL : 0;
 
     String page;
     page.reserve(3200);
@@ -1052,13 +1000,7 @@ void handleWeatherPage()
             "</style></head><body><div class=wrap><h1>Rain / Weather</h1><div class=city>";
     page += settings.weatherCity[0] ? settings.weatherCity : "No weather city configured";
     page += "</div><table>";
-    page += "<tr><td>Weather source</td><td>";
-    page += settings.weatherSource == 0 ? "Open-Meteo" : (settings.weatherSource == 1 ? "IMS + Open-Meteo" : "IMS only");
-    page += "</td></tr>";
-
-    if (settings.weatherSource == 2)
-        page += "<tr><td>Open-Meteo</td><td class=no>Disabled (IMS only)</td></tr>";
-    else if (!settings.weather || settings.weatherCity[0] == 0)
+    if (!settings.weather || settings.weatherCity[0] == 0)
         page += "<tr><td>Status</td><td class=no>Weather is off</td></tr>";
     else if (!dataForCity)
     {
@@ -1089,38 +1031,8 @@ void handleWeatherPage()
         page += row;
         page += "</td></tr>";
     }
-    if (settings.weatherSource != 0)
-    {
-        char row[100];
-        page += "<tr><td>Local station</td><td>";
-        page += imsStationName[0] ? imsStationName : "IMS";
-        if (imsStationId)
-        {
-            page += " #";
-            page += String(imsStationId);
-        }
-        if (settings.imsStation == 0 && imsStationDistanceKm > 0)
-        {
-            page += " (";
-            page += String(imsStationDistanceKm, 1);
-            page += " km)";
-        }
-        page += "</td></tr>";
-        if (imsRainValid)
-        {
-            page += "<tr><td>Local rain now</td><td class=big>";
-            page += String(imsRainRate, 1);
-            page += " mm/h</td></tr><tr><td>Local observation</td><td>";
-            page += imsObsTime;
-            snprintf(row, sizeof row, " (%lu s ago)", localAge);
-            page += row;
-            page += "</td></tr>";
-        }
-        else
-            page += "<tr><td>Local rain now</td><td class=no>No data yet</td></tr>";
-    }
     page += "</table><div class=note>";
-    if (settings.weatherSource != 2 && settings.weather)
+    if (settings.weather)
     {
         page += "The clock checks every ";
         page += String(settings.weatherInterval);
@@ -1130,17 +1042,6 @@ void handleWeatherPage()
                 "Open-Meteo data is model forecast output, not a local rain gauge. "
                 "Outside central Europe and North America the 15-minute values are "
                 "interpolated from hourly model data.";
-    }
-    if (settings.weatherSource != 0)
-    {
-        page += "<br><br>Local rain uses the IMS 10-minute XML station: "
-                "nearest to your Weather City when the station ID is 0, or the "
-                "station ID you set. IMS data can lag by about 30 minutes. "
-                "<a href='https://www.ims.gov.il/sites/default/files/ims_data/xml_files/imslasthour.xml' "
-                "target='_blank'>View IMS XML</a>.";
-        if (settings.weatherSource == 2)
-            page += "<br><br>IMS-only mode uses current station observations. "
-                    "It has no forecast, so rain warnings use the current local rate only.";
     }
     page += "<a href='/'>Back to settings</a></div></div></body></html>";
     sendChunked(200, "text/html", page);
@@ -1208,9 +1109,6 @@ void handleReset()
     settings.rainThresh10 = 20;
     settings.heatThresh10 = 310;
     settings.threshFormat = 0xA55A;
-    settings.weatherSource = 0;
-    settings.imsStation = 0;
-    settings.imsFormat = 0xBEEF;
     settings_save();
     Serial.printf("Settings reset: NTP=%s rain=%d/%smm heat=%d/%sC\r\n",
                   settings.ntpServer, settings.rainWarn, tenthsStr(settings.rainThresh10).c_str(),
@@ -1288,9 +1186,6 @@ void handleSave()
     settings.rainThresh = (uint8_t) constrain((settings.rainThresh10 + 5) / 10, 1, 25);   // keep legacy field in sync
     settings.heatThresh = (uint8_t) constrain((settings.heatThresh10 + 5) / 10, 20, 50);
     settings.threshFormat = 0xA55A;
-    if (server.hasArg("weatherSource")) settings.weatherSource = (uint8_t) constrain(server.arg("weatherSource").toInt(), 0, 2);
-    if (server.hasArg("imsStation")) settings.imsStation = (uint16_t) constrain(server.arg("imsStation").toInt(), 0, 9999);
-    settings.imsFormat = 0xBEEF;
     if (server.hasArg("warnAnim")) settings.warnAnim = (uint8_t) (server.arg("warnAnim").toInt() ? 1 : 0);
     if (server.hasArg("shabbat")) settings.shabbat = (uint8_t) (server.arg("shabbat").toInt() ? 1 : 0);
     if (server.hasArg("shabbatFreq")) settings.shabbatFreq = (uint8_t) constrain(server.arg("shabbatFreq").toInt(), 5, 60);
@@ -1533,118 +1428,6 @@ void handleUpdateDone()
 }
 //**************************************************************************************************
 //***************************Weather (Open-Meteo, free, no API key)**********************************************************************
-#define IMS_XML_URL "https://ims.gov.il/sites/default/files/ims_data/xml_files/imslasthour.xml"
-#define IMS_XML_MARGIN 25000UL   // byte window before the cached station offset
-
-struct ImsStationInfo {
-    uint16_t id;
-    int32_t lat;       // degrees * 1e6
-    int32_t lon;       // degrees * 1e6
-    uint32_t offset;   // approximate byte offset in imslasthour.xml
-    const char* name;
-};
-static const ImsStationInfo imsStations[] PROGMEM = {
-    { 78, 32846600, 35112300, 96251UL, "AFEQ" },
-    { 16, 32596001, 35277000, 18199UL, "AFULA NIR HAEMEQ" },
-    { 123, 32915000, 35513500, 128230UL, "AMMIAD" },
-    { 29, 31250000, 35186001, 40941UL, "ARAD" },
-    { 21, 32105600, 35211400, 23763UL, "ARIEL" },
-    { 124, 31834200, 34637400, 130587UL, "ASHDOD PORT" },
-    { 208, 31639400, 34521500, 153310UL, "ASHQELON PORT" },
-    { 271, 30787600, 34771000, 188784UL, "AVDAT" },
-    { 2, 32817001, 35762001, 1016UL, "AVNE ETAN" },
-    { 353, 33023998, 35574001, 207448UL, "AYYELET HASHAHAR" },
-    { 411, 31264200, 34804500, 223172UL, "BEER SHEVA BGU" },
-    { 75, 31725000, 34976002, 91075UL, "BEIT JIMAL" },
-    { 58, 31271999, 34389000, 71870UL, "BESOR FARM" },
-    { 54, 32007000, 34813999, 68951UL, "BET DAGAN" },
-    { 228, 31805200, 35501000, 167486UL, "BET HAARAVA" },
-    { 6, 32880000, 35650400, 3804UL, "BET ZAYDA" },
-    { 499, 33227700, 35635000, 226107UL, "DAFNA" },
-    { 99, 32862000, 35374000, 112592UL, "DEIR HANNA" },
-    { 79, 31503600, 34648000, 99090UL, "DOROT" },
-    { 206, 32467998, 35488998, 147566UL, "EDEN FARM" },
-    { 64, 29553000, 34952000, 77726UL, "ELAT" },
-    { 73, 33064999, 35216999, 85912UL, "ELON" },
-    { 107, 32388000, 34938000, 117786UL, "EN HAHORESH" },
-    { 67, 32603001, 35096001, 83106UL, "EN HASHOFET" },
-    { 44, 32681000, 34959000, 60439UL, "EN KARMEL" },
-    { 205, 32884400, 35301500, 144768UL, "ESHHAR" },
-    { 338, 30791100, 34471500, 196627UL, "EZUZ" },
-    { 263, 32556400, 35072500, 184032UL, "GALED" },
-    { 227, 32905200, 35748700, 164640UL, "GAMLA" },
-    { 236, 31629999, 34791000, 175959UL, "GAT" },
-    { 30, 31997000, 35451000, 43721UL, "GILGAL" },
-    { 46, 32473000, 34882000, 66143UL, "HADERA PORT" },
-    { 121, 31791000, 34805000, 125361UL, "HAFEZ HAYYIM" },
-    { 41, 32803400, 35054800, 52172UL, "HAIFA REFINERIES" },
-    { 43, 32773600, 35022300, 57502UL, "HAIFA TECHNION" },
-    { 42, 32761002, 35021000, 54636UL, "HAIFA UNIVERSITY" },
-    { 275, 32130000, 34832400, 194371UL, "HAKFAR HAYAROK" },
-    { 24, 31944900, 35149900, 32450UL, "HAR HARASHA" },
-    { 269, 32956001, 35328999, 186425UL, "HARASHIM" },
-    { 33, 30778999, 35238998, 46565UL, "HAZEVA" },
-    { 90, 32159800, 35351300, 107040UL, "ITAMAR" },
-    { 23, 31781000, 35222000, 29556UL, "JERUSALEM CENTRE" },
-    { 22, 31770400, 35197300, 26567UL, "JERUSALEM GIVAT RAM" },
-    { 202, 33172001, 35612999, 141910UL, "KEFAR BLUM" },
-    { 241, 33240400, 35569600, 178344UL, "KEFAR GILADI" },
-    { 233, 32883300, 35579200, 173134UL, "KEFAR NAHUM" },
-    { 350, 31381200, 34872900, 205043UL, "LAHAV" },
-    { 218, 31774000, 35296001, 158987UL, "MAALE ADUMMIM" },
-    { 224, 32481000, 35415000, 161823UL, "MAALE GILBOA" },
-    { 355, 32683300, 35600800, 209879UL, "MASSADA" },
-    { 10, 33129002, 35805000, 9525UL, "MEROM GOLAN PICMAN" },
-    { 210, 31588100, 35391600, 156153UL, "METZOKE DRAGOT" },
-    { 259, 31834100, 34961600, 181177UL, "NAHSHON" },
-    { 82, 31659000, 34680000, 101918UL, "NEGBA" },
-    { 232, 30048000, 35023300, 170308UL, "NEOT SMADAR" },
-    { 25, 31690000, 34973999, 35285UL, "NETIV HALAMED HE" },
-    { 349, 31205000, 34922700, 202243UL, "NEVATIM" },
-    { 186, 32708000, 35178001, 136243UL, "NEWE YAAR" },
-    { 274, 31731900, 34634800, 191575UL, "NIZZAN" },
-    { 207, 30365999, 35147999, 150465UL, "PARAN" },
-    { 20, 32174999, 35096001, 20929UL, "QARNE SHOMERON" },
-    { 74, 31816600, 34724400, 88690UL, "QEVUZAT YAVNE" },
-    { 106, 33080600, 35107900, 114964UL, "ROSH HANIQRA" },
-    { 77, 31664000, 35123001, 93449UL, "ROSH ZURIM" },
-    { 98, 30870001, 34794998, 109780UL, "SEDE BOQER" },
-    { 366, 32438999, 35511002, 212277UL, "SEDE ELIYYAHU" },
-    { 65, 31031000, 35391998, 80267UL, "SEDOM" },
-    { 28, 31357000, 35066002, 38158UL, "SHANI" },
-    { 343, 32983600, 35092300, 199411UL, "SHAVE ZIYYON" },
-    { 13, 32705002, 35405998, 15269UL, "TAVOR KADOORIE" },
-    { 178, 32058000, 34758800, 133404UL, "TEL AVIV COAST" },
-    { 11, 32698002, 35509998, 12426UL, "YAVNEEL" },
-    { 36, 29885000, 35077000, 49219UL, "YOTVATA" },
-    { 62, 32979999, 35507000, 74832UL, "ZEFAT HAR KENAAN" },
-    { 8, 32702000, 35584000, 6642UL, "ZEMAH" },
-    { 45, 32572400, 34954600, 63308UL, "ZIKHRON YAAQOV" },
-    { 112, 31070800, 34851300, 120210UL, "ZOMET HANEGEV" },
-    { 188, 31787800, 35125800, 139114UL, "ZOVA" },
-};
-#define IMS_STATION_COUNT (sizeof(imsStations) / sizeof(imsStations[0]))
-//**************************************************************************************************
-String imsStationOptions()
-{
-    String out;
-    out.reserve(2400);
-    out = "[[\"0\",\"Auto (nearest)\"]";
-    char name[28];
-    for (uint16_t i = 0; i < IMS_STATION_COUNT; i++)
-    {
-        const char* nm = (const char*) pgm_read_ptr(&imsStations[i].name);
-        strncpy_P(name, nm, sizeof(name) - 1);
-        name[sizeof(name) - 1] = 0;
-        out += ",[\"";
-        out += String(pgm_read_word(&imsStations[i].id));
-        out += "\",\"";
-        out += name;
-        out += "\"]";
-    }
-    out += "]";
-    return out;
-}
 String urlEncode(const char* s)
 {
     String out;
@@ -1761,291 +1544,7 @@ bool fetchWeather(double& temp, int& hum, double& precip, double& rainNext, int&
     return true;
 }
 //**************************************************************************************************
-bool imsStationById(uint16_t id, uint32_t& offset, char* name, size_t nameLen, float& dist)
-{
-    for (uint16_t i = 0; i < IMS_STATION_COUNT; i++)
-    {
-        if (pgm_read_word(&imsStations[i].id) == id)
-        {
-            offset = pgm_read_dword(&imsStations[i].offset);
-            const char* nm = (const char*) pgm_read_ptr(&imsStations[i].name);
-            strncpy_P(name, nm, nameLen - 1);
-            name[nameLen - 1] = 0;
-            dist = 0;
-            return true;
-        }
-    }
-    return false;
-}
 //**************************************************************************************************
-bool imsNearestStation(uint16_t& id, uint32_t& offset, char* name, size_t nameLen, float& dist)
-{
-    if (settings.weatherLat == 0 && settings.weatherLon == 0) return false;
-    float lat0 = settings.weatherLat / 1000000.0f;
-    float lon0 = settings.weatherLon / 1000000.0f;
-    float best = 1e9f;
-    int bestIdx = -1;
-    for (uint16_t i = 0; i < IMS_STATION_COUNT; i++)
-    {
-        float lat = (int32_t) pgm_read_dword(&imsStations[i].lat) / 1000000.0f;
-        float lon = (int32_t) pgm_read_dword(&imsStations[i].lon) / 1000000.0f;
-        float dlat = (lat - lat0) * 111.0f;
-        float dlon = (lon - lon0) * 111.0f * cosf(lat0 * 0.0174532925f);
-        float d = dlat * dlat + dlon * dlon;
-        if (d < best)
-        {
-            best = d;
-            bestIdx = i;
-        }
-    }
-    if (bestIdx < 0) return false;
-    id = pgm_read_word(&imsStations[bestIdx].id);
-    offset = pgm_read_dword(&imsStations[bestIdx].offset);
-    const char* nm = (const char*) pgm_read_ptr(&imsStations[bestIdx].name);
-    strncpy_P(name, nm, nameLen - 1);
-    name[nameLen - 1] = 0;
-    dist = sqrtf(best);
-    return true;
-}
-//**************************************************************************************************
-struct ImsFetchState {
-    WiFiClientSecure client;
-    HTTPClient http;
-    bool active;
-    unsigned long started;
-    uint16_t stationId;
-    char stationName[28];
-    float stationDistance;
-    char line[128];
-    size_t lineLen;
-    bool inObs;
-    bool target;
-    bool got;
-    bool finished;
-    uint8_t obsCount;
-    float lastRain;
-    float lastTemp;
-    int lastHum;
-    bool gotTemp;
-    bool gotHum;
-    char lastTime[24];
-};
-static ImsFetchState* imsFetch = nullptr;
-static int8_t imsFetchResult = 0;   // 0 = idle, 1 = success, -1 = failed
-
-bool imsFetchStart()
-{
-    if (imsFetch || settings.weatherSource == 0 || WiFi.status() != WL_CONNECTED) return false;
-    if (ESP.getFreeHeap() < 24000)
-    {
-        Serial.printf("IMS XML: skipped, low heap (%u)\r\n", ESP.getFreeHeap());
-        return false;
-    }
-    imsFetch = new ImsFetchState();
-    if (!imsFetch)
-    {
-        Serial.println("IMS XML: allocation failed");
-        return false;
-    }
-    imsFetch->active = false;
-
-    uint16_t stationId = settings.imsStation;
-    uint32_t stationOffset = 0;
-    char stationName[28] = "";
-    float stationDistance = 0;
-    bool found = false;
-    if (stationId == 0)
-    {
-        static char imsGeocodedCity[sizeof(settings.weatherCity)] = "";
-        if (settings.weatherCity[0] && strcmp(imsGeocodedCity, settings.weatherCity) != 0)
-        {
-            if (geocodeCity())
-            {
-                strncpy(imsGeocodedCity, settings.weatherCity, sizeof(imsGeocodedCity) - 1);
-                imsGeocodedCity[sizeof(imsGeocodedCity) - 1] = 0;
-            }
-        }
-        found = imsNearestStation(stationId, stationOffset, stationName, sizeof(stationName), stationDistance);
-    }
-    else
-        found = imsStationById(stationId, stationOffset, stationName, sizeof(stationName), stationDistance);
-    if (!found)
-    {
-        Serial.println("IMS XML: no matching station (set a station ID or Weather City)");
-        delete imsFetch;
-        imsFetch = nullptr;
-        return false;
-    }
-
-    unsigned long rangeStart = stationOffset > IMS_XML_MARGIN ? stationOffset - IMS_XML_MARGIN : 0;
-
-    imsFetch->client.setInsecure();
-    imsFetch->client.setBufferSizes(1024, 512);
-    imsFetch->http.setTimeout(10000);
-    if (!imsFetch->http.begin(imsFetch->client, IMS_XML_URL))
-    {
-        Serial.println("IMS XML: begin failed");
-        delete imsFetch;
-        imsFetch = nullptr;
-        return false;
-    }
-    imsFetch->http.addHeader("Range", String("bytes=") + String(rangeStart) + "-");
-    imsFetch->http.addHeader("Accept-Encoding", "identity");
-    Serial.printf("IMS XML: connecting, heap %u...\r\n", ESP.getFreeHeap());
-    ESP.wdtFeed();
-    int code = imsFetch->http.GET();
-    ESP.wdtFeed();
-    if (code != 206 && code != 200)
-    {
-        Serial.printf("IMS XML: HTTP %d\r\n", code);
-        imsFetch->http.end();
-        delete imsFetch;
-        imsFetch = nullptr;
-        return false;
-    }
-
-    imsFetch->stationId = stationId;
-    strncpy(imsFetch->stationName, stationName, sizeof(imsFetch->stationName) - 1);
-    imsFetch->stationName[sizeof(imsFetch->stationName) - 1] = 0;
-    imsFetch->stationDistance = stationDistance;
-    imsFetch->lineLen = 0;
-    imsFetch->inObs = false;
-    imsFetch->target = false;
-    imsFetch->got = false;
-    imsFetch->finished = false;
-    imsFetch->obsCount = 0;
-    imsFetch->lastRain = 0;
-    imsFetch->lastTemp = 0;
-    imsFetch->lastHum = 0;
-    imsFetch->gotTemp = false;
-    imsFetch->gotHum = false;
-    imsFetch->lastTime[0] = 0;
-    imsFetch->started = millis();
-    imsFetch->active = true;
-    imsFetchResult = 0;
-    Serial.printf("IMS XML: reading %s #%d...\r\n", imsFetch->stationName, imsFetch->stationId);
-    return true;
-}
-
-void imsFetchFinish(bool success)
-{
-    if (!imsFetch) return;
-    ImsFetchState* f = imsFetch;
-    imsFetch = nullptr;
-    f->http.end();
-    f->active = false;
-    if (success && f->got)
-    {
-        imsRainRate = f->lastRain * 6.0f;   // XML is a 10-minute sum -> mm/h
-        imsTempC = f->lastTemp;
-        imsHumidity = f->lastHum;
-        imsTempValid = f->gotTemp;
-        imsHumValid = f->gotHum;
-        imsUpdatedMs = millis();
-        imsStationId = f->stationId;
-        strncpy(imsStationName, f->stationName, sizeof(imsStationName) - 1);
-        imsStationName[sizeof(imsStationName) - 1] = 0;
-        imsStationDistanceKm = f->stationDistance;
-        strncpy(imsObsTime, f->lastTime, sizeof(imsObsTime) - 1);
-        imsObsTime[sizeof(imsObsTime) - 1] = 0;
-        imsRainValid = true;
-        imsFetchResult = 1;
-        Serial.printf("IMS XML: %s #%d %.1f mm/10min = %.1f mm/h at %s\r\n",
-                      imsStationName, imsStationId, f->lastRain, imsRainRate, imsObsTime);
-    }
-    else
-    {
-        imsFetchResult = -1;
-        Serial.println("IMS XML: station not found or request timed out");
-    }
-    delete f;
-}
-
-void imsFetchPump()   // read a small chunk per loop iteration; never block for the whole XML
-{
-    if (!imsFetch || !imsFetch->active) return;
-    if (Update.isRunning() || otaRebootAt != 0)
-    {
-        imsFetchFinish(false);
-        return;
-    }
-    WiFiClient* stream = imsFetch->http.getStreamPtr();
-    if (!stream) { imsFetchFinish(false); return; }
-
-    uint16_t n = 0;
-    while (stream->available() && n < 512)
-    {
-        int c = stream->read();
-        if (c < 0) break;
-        n++;
-        if (c == '\r') continue;
-        if (c == '\n')
-        {
-            imsFetch->line[imsFetch->lineLen] = 0;
-            if (strstr(imsFetch->line, "<Observation>"))
-            {
-                imsFetch->inObs = true;
-                imsFetch->target = false;
-            }
-            if (imsFetch->inObs)
-            {
-                char* p;
-                if ((p = strstr(imsFetch->line, "<stn_num>")) != NULL)
-                    imsFetch->target = (atoi(p + 9) == imsFetch->stationId);
-                if (imsFetch->target)
-                {
-                    if ((p = strstr(imsFetch->line, "<time_obs>")) != NULL)
-                    {
-                        p += 10;
-                        size_t i = 0;
-                        while (p[i] && p[i] != '<' && i < sizeof(imsFetch->lastTime) - 1)
-                        {
-                            imsFetch->lastTime[i] = p[i];
-                            i++;
-                        }
-                        imsFetch->lastTime[i] = 0;
-                    }
-                    else if (strstr(imsFetch->line, "<Rain/>") != NULL)
-                        imsFetch->lastRain = 0;
-                    else if ((p = strstr(imsFetch->line, "<Rain>")) != NULL)
-                        imsFetch->lastRain = atof(p + 6);
-                    else if ((p = strstr(imsFetch->line, "<TD>")) != NULL)
-                    {
-                        imsFetch->lastTemp = atof(p + 4);
-                        imsFetch->gotTemp = true;
-                    }
-                    else if ((p = strstr(imsFetch->line, "<RH>")) != NULL)
-                    {
-                        imsFetch->lastHum = atoi(p + 4);
-                        imsFetch->gotHum = true;
-                    }
-                }
-                if (strstr(imsFetch->line, "</Observation>"))
-                {
-                    if (imsFetch->target)
-                    {
-                        imsFetch->obsCount++;
-                        imsFetch->got = true;
-                        if (imsFetch->obsCount >= 6)
-                        {
-                            imsFetch->finished = true;
-                            break;
-                        }
-                    }
-                    imsFetch->inObs = false;
-                }
-            }
-            imsFetch->lineLen = 0;
-        }
-        else if (imsFetch->lineLen < sizeof(imsFetch->line) - 1)
-            imsFetch->line[imsFetch->lineLen++] = (char) c;
-    }
-
-    if (imsFetch->finished || (millis() - imsFetch->started) > 15000UL
-        || (!stream->connected() && !stream->available()))
-        imsFetchFinish(imsFetch->got);
-}
-
 //**************************************************************************************************
 //***********************WiFi Reconnect Logic**********************************************************************
 // starts a reconnect attempt (non-blocking, result is checked in loop())
@@ -3454,7 +2953,7 @@ void setup() {
     Serial.printf("\r\nReset reason: %s\r\n", ESP.getResetReason().c_str());
     Serial.printf("Reset info: %s\r\n", ESP.getResetInfo().c_str());
     settings_load();              // load saved settings from EEPROM
-    Serial.printf("Settings loaded: SSID:%s PSW:%s NTP:%s TZ:%d BR:%d ORIENT:%d DST:%d COLON:%d DIGANIM:%d MARQ:%d PULSE:%d NTPINT:%d WEATHER:%d WCITY:%s WCITYSHOW:%d WINT:%d WSRC:%d/%d WSPEED:%d SDINT:%d RWARN:%d HWARN:%d RTHR:%d.%d HTHR:%d.%d WARNANIM:%d SHABBAT:%d SLEAD:%d SFREQ:%d SANIM:%d HOLIDAY:%d WPAUTH:%s\r\n", settings.ssid, passHidden(settings.pass), settings.ntpServer, settings.tzOffset, settings.brightness, settings.orient, settings.dstRule, settings.colonAnim, settings.digitAnim, settings.marquee, settings.pulse, settings.ntpInterval, settings.weather, settings.weatherCity, settings.weatherCityShow, settings.weatherInterval, settings.weatherSource, settings.imsStation, settings.weatherSpeed, settings.scrollDateInt, settings.rainWarn, settings.heatWarn, settings.rainThresh10 / 10, settings.rainThresh10 % 10, settings.heatThresh10 / 10, settings.heatThresh10 % 10, settings.warnAnim, settings.shabbat, settings.shabbatLead, settings.shabbatFreq, settings.shabbatAnim, settings.holidayGreetings, settings.webPass[0] ? "set" : "none");
+    Serial.printf("Settings loaded: SSID:%s PSW:%s NTP:%s TZ:%d BR:%d ORIENT:%d DST:%d COLON:%d DIGANIM:%d MARQ:%d PULSE:%d NTPINT:%d WEATHER:%d WCITY:%s WCITYSHOW:%d WINT:%d WSPEED:%d SDINT:%d RWARN:%d HWARN:%d RTHR:%d.%d HTHR:%d.%d WARNANIM:%d SHABBAT:%d SLEAD:%d SFREQ:%d SANIM:%d HOLIDAY:%d WPAUTH:%s\r\n", settings.ssid, passHidden(settings.pass), settings.ntpServer, settings.tzOffset, settings.brightness, settings.orient, settings.dstRule, settings.colonAnim, settings.digitAnim, settings.marquee, settings.pulse, settings.ntpInterval, settings.weather, settings.weatherCity, settings.weatherCityShow, settings.weatherInterval, settings.weatherSpeed, settings.scrollDateInt, settings.rainWarn, settings.heatWarn, settings.rainThresh10 / 10, settings.rainThresh10 % 10, settings.heatThresh10 / 10, settings.heatThresh10 % 10, settings.warnAnim, settings.shabbat, settings.shabbatLead, settings.shabbatFreq, settings.shabbatAnim, settings.holidayGreetings, settings.webPass[0] ? "set" : "none");
     if (!settings.weather)
         Serial.println("Weather: disabled in settings");
     else if (strlen(settings.weatherCity) == 0)
@@ -3533,7 +3032,6 @@ void loop() {
     refresh_display();
     while (true) {
         yield();  // on the ESP8266, if the loop must run long operations (e.g. floating point math), call yield regularly so the 8266 keeps running in the background without rebooting or dropping the network.
-        imsFetchPump();   // read at most a small chunk of the IMS XML per loop iteration
         handleSerialCommand();
         server.handleClient();   // handle web settings page requests
         if (otaRebootAt != 0 && (long) (millis() - otaRebootAt) >= 0)
@@ -3612,7 +3110,7 @@ void loop() {
                 }
             }
         }
-        if (!otaBusy && rtcInitialized && settings.weatherSource != 2 && settings.weather && WiFi.status() == WL_CONNECTED && strlen(settings.weatherCity) > 0)   // periodic Open-Meteo update
+        if (!otaBusy && rtcInitialized && settings.weather && WiFi.status() == WL_CONNECTED && strlen(settings.weatherCity) > 0)   // periodic Open-Meteo update
         {
             static unsigned long weatherLast = 0;
             static bool weatherArmed = false;
@@ -3646,28 +3144,23 @@ void loop() {
                 {
                     double rainLimit = settings.rainThresh10 / 10.0;
                     double heatLimit = settings.heatThresh10 / 10.0;
-                    bool localFresh = settings.weatherSource && imsRainValid && (millis() - imsUpdatedMs < 2700000UL);
-                    double nowRate = localFresh ? imsRainRate : precip;
-                    double nowTemp = (localFresh && imsTempValid) ? imsTempC : temp;
-                    int nowHum = (localFresh && imsHumValid) ? imsHumidity : hum;
-                    Serial.printf("Weather check: %.1fC (heat %s, limit %.1f), now %.1fmm/h%s peak2h %.1fmm/h (rain %s, limit %.1f, code %d)\r\n",
+                    Serial.printf("Weather check: %.1fC (heat %s, limit %.1f), now %.1fmm/h peak2h %.1fmm/h (rain %s, limit %.1f, code %d)\r\n",
                                   temp, settings.heatWarn ? "on" : "off", heatLimit,
-                                  nowRate, localFresh ? " local" : "", rainNext, settings.rainWarn ? "on" : "off", rainLimit, wmoCode);
+                                  precip, rainNext, settings.rainWarn ? "on" : "off", rainLimit, wmoCode);
                     char buf[160];
                     uint8_t alertType = ALERT_ANIM_NONE;
-                    bool rainNow = settings.rainWarn && nowRate >= rainLimit;
+                    bool rainNow = settings.rainWarn && precip >= rainLimit;
                     bool rainSoon = settings.rainWarn && rainNext >= rainLimit;
                     if (rainNow || rainSoon)
                     {
                         alertType = ALERT_ANIM_RAIN;
-                        // Show the current rate (local IMS when available) plus the
-                        // peak rate forecast for the next two hours.
+                        // Show the current rate plus the peak rate forecast for the next two hours.
                         if (settings.weatherCityShow)
                             snprintf(buf, sizeof buf, "RAIN WARNING: NOW %.1fmm/h NEXT 2H PEAK %.1fmm/h %s Outside Temp: %.1fC, Humidity: %d%%",
-                                     nowRate, rainNext, settings.weatherCity, nowTemp, nowHum);
+                                     precip, rainNext, settings.weatherCity, temp, hum);
                         else
                             snprintf(buf, sizeof buf, "RAIN WARNING: NOW %.1fmm/h NEXT 2H PEAK %.1fmm/h Outside Temp: %.1fC, Humidity: %d%%",
-                                     nowRate, rainNext, nowTemp, nowHum);
+                                     precip, rainNext, temp, hum);
                     }
                     else if (settings.heatWarn && temp >= heatLimit)
                     {
@@ -3708,119 +3201,6 @@ void loop() {
                 }
                 else
                     startMsg("WEATHER FAIL");
-            }
-        }
-        if (!otaBusy && rtcInitialized && settings.weatherSource != 0 && WiFi.status() == WL_CONNECTED)
-        {
-            static unsigned long imsLast = 0;
-            static bool imsArmed = false;
-            static bool imsFirst = true;
-            static bool imsWasWet = false;
-            static unsigned long imsLastWarn = 0;
-            static unsigned long imsLastMsg = 0;
-            static unsigned long imsLastHeat = 0;
-
-            if (imsFetchResult != 0)
-            {
-                int8_t result = imsFetchResult;
-                imsFetchResult = 0;
-                if (result > 0)
-                {
-                    double limit = settings.rainThresh10 / 10.0;
-                    bool wet = imsRainRate >= limit;
-                    if (settings.rainWarn && wet && (!imsWasWet || (millis() - imsLastWarn) >= 1200000UL))
-                    {
-                        char buf[160];
-                        if (!imsTempValid || !imsHumValid)
-                            snprintf(buf, sizeof buf, "RAIN WARNING: LOCAL %.1fmm/h", imsRainRate);
-                        else if (settings.weatherCityShow)
-                            snprintf(buf, sizeof buf, "RAIN WARNING: LOCAL %.1fmm/h %s Outside Temp: %.1fC, Humidity: %d%%",
-                                     imsRainRate, settings.weatherCity, imsTempC, imsHumidity);
-                        else
-                            snprintf(buf, sizeof buf, "RAIN WARNING: LOCAL %.1fmm/h Outside Temp: %.1fC, Humidity: %d%%",
-                                     imsRainRate, imsTempC, imsHumidity);
-                        weatherAlertActive = true;
-                        if (settings.warnAnim)
-                        {
-                            weatherAlertMsgActive = false;
-                            startAlertAnimation(ALERT_ANIM_RAIN, buf, settings.weatherSpeed);
-                        }
-                        else
-                        {
-                            weatherAlertMsgActive = true;
-                            alertAnimActive = false;
-                            showMsg = false;
-                            msgQueueCount = 0;
-                            startMsg(buf, settings.weatherSpeed);
-                        }
-                        f_scroll_x = false;
-                        imsLastWarn = millis();
-                    }
-                    if (settings.weatherSource == 2)
-                    {
-                        double heatLimit = settings.heatThresh10 / 10.0;
-                        if (settings.heatWarn && imsTempValid && imsTempC >= heatLimit
-                            && (imsLastHeat == 0 || (millis() - imsLastHeat) >= 1200000UL))
-                        {
-                            char buf[160];
-                            if (settings.weatherCityShow)
-                                snprintf(buf, sizeof buf, "HEAT WARNING: LOCAL %.1fC %s Humidity: %d%%",
-                                         imsTempC, settings.weatherCity, imsHumValid ? imsHumidity : 0);
-                            else
-                                snprintf(buf, sizeof buf, "HEAT WARNING: LOCAL %.1fC Humidity: %d%%",
-                                         imsTempC, imsHumValid ? imsHumidity : 0);
-                            weatherAlertActive = true;
-                            if (settings.warnAnim)
-                            {
-                                weatherAlertMsgActive = false;
-                                startAlertAnimation(ALERT_ANIM_HEAT, buf, settings.weatherSpeed);
-                            }
-                            else
-                            {
-                                weatherAlertMsgActive = true;
-                                alertAnimActive = false;
-                                showMsg = false;
-                                msgQueueCount = 0;
-                                startMsg(buf, settings.weatherSpeed);
-                            }
-                            f_scroll_x = false;
-                            imsLastHeat = millis();
-                        }
-                        else if (settings.weather
-                                 && (imsLastMsg == 0 || (millis() - imsLastMsg) >= (unsigned long) settings.weatherInterval * 60000UL))
-                        {
-                            char buf[160];
-                            if (settings.weatherCityShow)
-                                snprintf(buf, sizeof buf, "%s Outside Temp: %.1fC, Humidity: %d%%",
-                                         settings.weatherCity, imsTempValid ? imsTempC : 0.0f, imsHumValid ? imsHumidity : 0);
-                            else
-                                snprintf(buf, sizeof buf, "Outside Temp: %.1fC, Humidity: %d%%",
-                                         imsTempValid ? imsTempC : 0.0f, imsHumValid ? imsHumidity : 0);
-                            startMsg(buf, settings.weatherSpeed);
-                            imsLastMsg = millis();
-                        }
-                    }
-                    imsWasWet = wet;
-                }
-            }
-            else if (!imsFetch || !imsFetch->active)
-            {
-                if (!imsArmed)
-                {
-                    imsLast = millis();
-                    imsArmed = true;
-                    Serial.printf("IMS: local station %s check in %s (then every 10 min)\r\n",
-                                  settings.imsStation == 0 ? "nearest" : "selected",
-                                  imsFirst ? "20s" : "10 min");
-                }
-                unsigned long imsWait = imsFirst ? 20000UL : 600000UL;
-                if ((millis() - imsLast) >= imsWait)
-                {
-                    imsArmed = false;
-                    imsFirst = false;
-                    Serial.println("IMS: checking local station...");
-                    imsFetchStart();
-                }
             }
         }
         if (f_tckr1s == true)        // flag 1sek
