@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.28"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.3.0"   // shown on the settings page
 
 // Rain warning tuning. The current rain rate uses settings.rainThresh10;
 // these values control the forecast-based part of the warning.
@@ -915,7 +915,7 @@ void startNtpMessage(tm* tt)   // show the time that was actually synced
         return;
     }
     char b[32];
-    snprintf(b, sizeof b, "NTP OK %02d:%02d", tt->tm_hour, tt->tm_min);
+    snprintf(b, sizeof b, "NTP OK! %02d:%02d", tt->tm_hour, tt->tm_min);
     startMsg(b);
 }
 //**************************************************************************************************
