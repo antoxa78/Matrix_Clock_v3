@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.23"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.24"   // shown on the settings page
 //#define REVERSE_HORIZONTAL
 //#define REVERSE_VERTICAL
 //***************************Web Settings Page**********************************************************************
@@ -786,6 +786,18 @@ void startMsg(const char* text, uint8_t step)   // scroll a message; queue up to
     msgQueue[msgQueueCount][sizeof(msgQueue[msgQueueCount]) - 1] = 0;
     msgQueueStep[msgQueueCount] = step;
     msgQueueCount++;
+}
+//**************************************************************************************************
+void startNtpMessage(tm* tt)   // show the time that was actually synced
+{
+    if (tt == NULL)
+    {
+        startMsg("NTP SYNC FAILED");
+        return;
+    }
+    char b[32];
+    snprintf(b, sizeof b, "NTP OK %02d:%02d", tt->tm_hour, tt->tm_min);
+    startMsg(b);
 }
 //**************************************************************************************************
 String htmlEscape(const char* s)   // escape special chars so saved values can't break the HTML form
@@ -3010,10 +3022,13 @@ void setup() {
         if (tt != NULL)   // if network time was received, write it to the RTC
         {
             rtc_set(tt);
-            startMsg("NTP Clock Sync. Successful.");
+            startNtpMessage(tt);
         }
         else
+        {
             Serial.println("no time packet received");
+            startNtpMessage(NULL);
+        }
     }
 }
 //**************************************************************************************************
@@ -3075,12 +3090,12 @@ void loop() {
                 {
                     rtc_set(tt);
                     Serial.println("Daily resync OK");
-                    startMsg("NTP Clock Sync. Successful.");
+                    startNtpMessage(tt);
                 }
                 else
                 {
                     Serial.println("Daily resync failed (no NTP reply)");
-                    startMsg("Sync Failed");
+                    startNtpMessage(NULL);
                 }
             }
         }
@@ -3101,12 +3116,12 @@ void loop() {
                 {
                     rtc_set(tt);
                     Serial.println("Periodic NTP sync OK");
-                    startMsg("NTP Clock Sync. Successful.");
+                    startNtpMessage(tt);
                 }
                 else
                 {
                     Serial.println("Periodic NTP sync failed (no NTP reply)");
-                    startMsg("Sync Failed");
+                    startNtpMessage(NULL);
                 }
             }
         }
@@ -3299,10 +3314,13 @@ void loop() {
                 {
                     rtc_set(tt);
                     Serial.println("RTC resynced after WiFi reconnect");
-                    startMsg("NTP Clock Sync. Successful.");
+                    startNtpMessage(tt);
                 }
                 else
+                {
                     Serial.println("no time packet received");
+                    startNtpMessage(NULL);
+                }
             }
             rtc2mez();
             rtcInitialized = true;
