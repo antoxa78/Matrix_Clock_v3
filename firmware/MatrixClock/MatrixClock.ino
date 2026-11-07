@@ -33,7 +33,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.18"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.19"   // shown on the settings page
 //#define REVERSE_HORIZONTAL
 //#define REVERSE_VERTICAL
 //***************************Web Settings Page**********************************************************************
@@ -966,6 +966,8 @@ void handleValues()
     j += "[\"Shabbat Animation\",\"shabbatAnim\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.shabbatAnim) + "\"],";
     j += "[\"Holiday Greetings\",\"holidayGreetings\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.holidayGreetings) + "\"]";
     j += "]}";
+    server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    server.sendHeader("Pragma", "no-cache");
     sendChunked(200, "application/json", j);
 }
 //**************************************************************************************************
@@ -1012,6 +1014,8 @@ void handleWeatherPage()
         j += ",\"imsTime\":\"" + jsonEsc(imsObsTime) + "\"";
         j += ",\"imsAge\":" + String(imsAge);
         j += "}";
+        server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+        server.sendHeader("Pragma", "no-cache");
         server.send(200, "application/json", j);
         return;
     }
@@ -1159,6 +1163,8 @@ void handleStatus()
     j += ",\"freeSketch\":" + String(ESP.getFreeSketchSpace());
     j += ",\"ota\":" + String(Update.isRunning() ? 1 : 0);
     j += "}";
+    server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    server.sendHeader("Pragma", "no-cache");
     server.send(200, "application/json", j);
 }
 //**************************************************************************************************
