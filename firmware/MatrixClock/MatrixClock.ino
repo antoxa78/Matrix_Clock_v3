@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.25"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.26"   // shown on the settings page
 //#define REVERSE_HORIZONTAL
 //#define REVERSE_VERTICAL
 //***************************Web Settings Page**********************************************************************
@@ -90,9 +90,11 @@ struct ClockSettings {
     uint8_t birthdayAnim;    // 0 = text only, 1 = birthday animation
     BirthdayEntry birthdays[BIRTHDAY_MAX];
     uint16_t birthdayFormat; // 0xB17D when the birthday fields are valid
+    uint8_t holidayFreq;     // holiday greeting repeat interval in minutes (0 = once/day)
+    uint16_t greetingFormat; // 0xB17E when the holiday frequency field is valid
 };
-ClockSettings settings = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 0, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D };
-const ClockSettings settings_defaults = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 0, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D };
+ClockSettings settings = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 0, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E };
+const ClockSettings settings_defaults = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 0, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E };
 bool rtcInitialized = false;
 bool apActive = false;              // AP fallback mode active (settings page accessible)
 bool apShutdownPending = false;     // stopAP ran; softAP shutdown deferred to a quieter moment
@@ -682,6 +684,15 @@ void settings_load()
             repaired = true;
         }
     }
+    if (settings.greetingFormat != 0xB17E)   // settings saved before holiday frequency existed
+    {
+        settings.holidayFreq = 0;
+        settings.greetingFormat = 0xB17E;
+        repaired = true;
+    }
+    if (settings.holidayFreq != 0 && settings.holidayFreq != 15 && settings.holidayFreq != 30
+        && settings.holidayFreq != 60 && settings.holidayFreq != 120 && settings.holidayFreq != 240)
+    { settings.holidayFreq = 0; repaired = true; }
     if (settings.digitAnim > 5) { settings.digitAnim = 1; repaired = true; }   // new field / garbage from old EEPROM -> roll
     if (settings.weatherCityShow > 1) { settings.weatherCityShow = 1; repaired = true; }   // new field / garbage from old EEPROM -> show city
     if (settings.warnAnim > 1) { settings.warnAnim = 1; repaired = true; }   // new field / garbage from old EEPROM -> animation on
@@ -1040,18 +1051,17 @@ void handleValues()
     j += "[\"Shabbat Lead (min)\",\"shabbatLead\",[[\"10\",\"10 min\"],[\"15\",\"15 min\"],[\"20\",\"20 min\"],[\"30\",\"30 min\"],[\"45\",\"45 min\"],[\"60\",\"1 hour\"],[\"90\",\"1.5 h\"],[\"120\",\"2 h\"],[\"180\",\"3 h\"],[\"240\",\"4 h\"]],\"" + String(settings.shabbatLead) + "\"],";
     j += "[\"Shabbat Animation\",\"shabbatAnim\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.shabbatAnim) + "\"],";
     j += "[\"Holiday Greetings\",\"holidayGreetings\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.holidayGreetings) + "\"],";
+    j += "[\"Holiday Message Frequency\",\"holidayFreq\",[[\"0\",\"Once/day\"],[\"15\",\"15 min\"],[\"30\",\"30 min\"],[\"60\",\"1 hour\"],[\"120\",\"2 hours\"],[\"240\",\"4 hours\"]],\"" + String(settings.holidayFreq) + "\"],";
     j += "[\"Birthday Greetings\",\"birthdayEnabled\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.birthdayEnabled) + "\"],";
     j += "[\"Birthday Message Frequency\",\"birthdayFreq\",[[\"0\",\"Once/day\"],[\"15\",\"15 min\"],[\"30\",\"30 min\"],[\"60\",\"1 hour\"],[\"120\",\"2 hours\"],[\"240\",\"4 hours\"]],\"" + String(settings.birthdayFreq) + "\"],";
     j += "[\"Birthday Animation\",\"birthdayAnim\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.birthdayAnim) + "\"],";
     for (uint8_t i = 0; i < BIRTHDAY_MAX; i++)
     {
-        char label[32], key[16];
-        snprintf(label, sizeof label, "Birthday %u Name", (unsigned) (i + 1));
-        snprintf(key, sizeof key, "bday%uName", (unsigned) (i + 1));
-        j += "[\"" + String(label) + "\",\"" + key + "\",null,\"" + jsonEsc(settings.birthdays[i].name) + "\"],";
-        snprintf(label, sizeof label, "Birthday %u Date (DD/MM/YYYY)", (unsigned) (i + 1));
-        snprintf(key, sizeof key, "bday%uDate", (unsigned) (i + 1));
-        j += "[\"" + String(label) + "\",\"" + key + "\",null,\"" + birthdayDateStr(settings.birthdays[i]) + "\"]";
+        char label[24], key[16];
+        snprintf(label, sizeof label, "Birthday %u", (unsigned) (i + 1));
+        snprintf(key, sizeof key, "bday%u", (unsigned) (i + 1));
+        j += "[\"" + String(label) + "\",\"" + key + "\",\"birthday\",\""
+             + jsonEsc(settings.birthdays[i].name) + "|" + birthdayDateStr(settings.birthdays[i]) + "\"]";
         if (i + 1 < BIRTHDAY_MAX) j += ",";
     }
     j += "]}";
@@ -1230,6 +1240,8 @@ void handleReset()
     settings.birthdayAnim = 1;
     memset(settings.birthdays, 0, sizeof(settings.birthdays));
     settings.birthdayFormat = 0xB17D;
+    settings.holidayFreq = 0;
+    settings.greetingFormat = 0xB17E;
     settings_save();
     Serial.printf("Settings reset: NTP=%s rain=%d/%smm heat=%d/%sC\r\n",
                   settings.ntpServer, settings.rainWarn, tenthsStr(settings.rainThresh10).c_str(),
@@ -1313,6 +1325,10 @@ void handleSave()
     if (server.hasArg("shabbatLead")) settings.shabbatLead = (uint8_t) constrain(server.arg("shabbatLead").toInt(), 10, 240);
     settings.shabbatAnim = (uint8_t) (server.arg("shabbatAnim").toInt() ? 1 : 0);
     settings.holidayGreetings = (uint8_t) (server.arg("holidayGreetings").toInt() ? 1 : 0);
+    if (server.hasArg("holidayFreq")) settings.holidayFreq = (uint8_t) constrain(server.arg("holidayFreq").toInt(), 0, 240);
+    if (settings.holidayFreq != 0 && settings.holidayFreq != 15 && settings.holidayFreq != 30
+        && settings.holidayFreq != 60 && settings.holidayFreq != 120 && settings.holidayFreq != 240)
+        settings.holidayFreq = 0;
     settings.birthdayEnabled = (uint8_t) (server.arg("birthdayEnabled").toInt() ? 1 : 0);
     if (server.hasArg("birthdayFreq")) settings.birthdayFreq = (uint8_t) constrain(server.arg("birthdayFreq").toInt(), 0, 240);
     if (settings.birthdayFreq != 0 && settings.birthdayFreq != 15 && settings.birthdayFreq != 30
@@ -1346,6 +1362,7 @@ void handleSave()
         }
     }
     settings.birthdayFormat = 0xB17D;
+    settings.greetingFormat = 0xB17E;
     settings.dstRule = (uint8_t) constrain(server.arg("dst").toInt(), 0, 3);
     settings_save();
     Serial.printf("Settings saved, SSID:%s PSW:%s WPAUTH:%s\r\n", settings.ssid, passHidden(settings.pass), settings.webPass[0] ? "set" : "none");
@@ -2038,8 +2055,26 @@ void holidayTick()   // once per minute: fetch this month's holidays and greet o
             type = holidayTypeForDay(MEZ.tag12);
     }
 
-    if (type == HOLIDAY_NONE || holidayGreetedKey == todayKey) return;
-    holidayGreetedKey = todayKey;
+    if (type == HOLIDAY_NONE) return;
+    static uint32_t holidayMsgDate = 0;
+    static unsigned long lastHolidayMsg = 0;
+    if (todayKey != holidayMsgDate)
+    {
+        holidayMsgDate = todayKey;
+        lastHolidayMsg = 0;
+    }
+    if (settings.holidayFreq == 0)
+    {
+        if (holidayGreetedKey == todayKey) return;
+        holidayGreetedKey = todayKey;
+    }
+    else
+    {
+        if (lastHolidayMsg != 0
+            && (millis() - lastHolidayMsg) < (unsigned long) settings.holidayFreq * 60000UL)
+            return;
+        lastHolidayMsg = millis();
+    }
 
     const char* text = holidayGreeting(type);
     uint8_t anim = holidayAnimation(type);
