@@ -33,7 +33,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.19"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.20"   // shown on the settings page
 //#define REVERSE_HORIZONTAL
 //#define REVERSE_VERTICAL
 //***************************Web Settings Page**********************************************************************
@@ -1367,7 +1367,7 @@ f.addEventListener('submit',function(e){
  xhr.onload=function(){
   var r={ok:false,msg:'Invalid response from clock'};
   try{r=JSON.parse(xhr.responseText);}catch(err){}
-  if(r.ok){fill.style.width='100%';fill.className='fill';st.className='status ok';st.textContent=r.msg;setTimeout(function(){location.href='/';},15000);}
+  if(r.ok){fill.style.width='100%';fill.className='fill';st.className='status ok';st.textContent='Firmware updated. Waiting for restart...';function wc(n){fetch('/status',{cache:'no-store'}).then(function(x){if(!x.ok)throw 0;return x.json();}).then(function(){location.href='/';}).catch(function(){if(n>0)setTimeout(function(){wc(n-1);},2000);else{st.className='status err';st.textContent='Clock did not return. Open the settings page manually.';}});}setTimeout(function(){wc(30);},3000);}
   else{fill.className='fill err';st.className='status err';st.textContent='Update failed: '+r.msg;btn.disabled=false;fw.disabled=false;}
  };
  xhr.onerror=function(){fill.className='fill err';st.className='status err';st.textContent='Connection lost. Check the clock and try again.';btn.disabled=false;fw.disabled=false;};
@@ -1404,8 +1404,23 @@ void handleReboot()
 {
     if (!webAuthOk()) { server.requestAuthentication(); return; }
     if (Update.isRunning()) { server.send(503, "text/plain", "Update in progress"); return; }
+    static const char REBOOT_PAGE[] PROGMEM = R"HTML(<!DOCTYPE html><html><head><meta charset=utf-8>
+<meta name=viewport content='width=device-width,initial-scale=1'>
+<meta name=theme-color content='#0a0d0b'><title>MatrixClock Restart</title><style>
+body{margin:0;background:#0a0d0b;color:#e8f0ec;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;text-align:center;padding:72px 24px}
+h2{color:#22e07a;font-size:20px;margin:14px 0 6px}p{color:#7c8c84;font-size:14px;line-height:1.5}
+a{color:#22e07a;text-decoration:none}
+</style></head><body><h2>Restarting the clock...</h2>
+<p id=st>Waiting for the clock to come back.</p>
+<p><a href="/">Open settings</a></p>
+<script>
+function w(n){fetch('/status',{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(){location.href='/';}).catch(function(){if(n>0)setTimeout(function(){w(n-1);},2000);else document.getElementById('st').textContent='Clock did not return. Open the settings page manually.';});}
+setTimeout(function(){w(30);},3000);
+</script></body></html>)HTML";
+    server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    server.sendHeader("Pragma", "no-cache");
     server.keepAlive(false);
-    server.send(200, "text/plain", "Rebooting...");
+    sendChunked_P(200, "text/html", REBOOT_PAGE);
     otaRebootAt = millis() + 800UL;
 }
 
@@ -3482,6 +3497,7 @@ void setup() {
     server.on("/update", HTTP_POST, handleUpdateDone, handleUpdateUpload);
     server.on("/apupdate", HTTP_GET, handleAPUpdate);
     server.on("/reboot", HTTP_GET, handleReboot);
+    server.on("/restart", HTTP_GET, handleReboot);
     server.begin();
     Serial.println("Web server started");
     ///////////////////////////////////
