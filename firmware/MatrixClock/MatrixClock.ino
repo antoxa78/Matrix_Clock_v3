@@ -32,7 +32,16 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.27"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.28"   // shown on the settings page
+
+// Rain warning tuning. The current rain rate uses settings.rainThresh10;
+// these values control the forecast-based part of the warning.
+#define RAIN_PROB_MIN          60    // % chance required for a forecast warning
+#define RAIN_PROB_NOW_MIN      50    // % chance required for a "rain code now" warning
+#define RAIN_AMOUNT_1H_MM      0.3   // mm expected in the next hour
+#define RAIN_AMOUNT_2H_MM      0.6   // mm expected in the next two hours
+#define RAIN_CODE_AMOUNT_2H_MM 0.1   // minimum forecast amount for a code-only warning
+#define WEATHER_STALE_MIN      45    // data older than this is stale (or 3 intervals)
 //#define REVERSE_HORIZONTAL
 //#define REVERSE_VERTICAL
 //***************************Web Settings Page**********************************************************************
@@ -196,6 +205,15 @@ int weatherHumidity = 0;
 int weatherCode = 0;
 unsigned long weatherUpdatedMs = 0;
 char weatherDataCity[sizeof(settings.weatherCity)] = "";
+int weatherPrecipProb = 0;                    // max precipitation probability in the next 2 h, %
+float weatherRain1h = 0;                      // expected rain in the next hour, mm
+float weatherRain2h = 0;                      // expected rain in the next two hours, mm
+bool weatherRainCodeSoon = false;             // a rain WMO code is forecast in the next 2 h
+bool weatherRainLatched = false;              // hysteresis: warning survives one dry check
+uint8_t weatherRainDryChecks = 0;             // consecutive dry checks while latched
+float weatherRainLastRate = 0;                // last active values, used for "RAIN ENDING"
+float weatherRainLast1h = 0;
+int weatherRainLastProb = 0;
 bool f_tckr1s = false;
 bool f_tckr50ms = false;
 bool kk;
@@ -1036,7 +1054,7 @@ void handleValues()
     j += "[\"Resync Hour\",\"resyncHour\",null,\"" + String(settings.resyncHour) + "\"],";
     j += "[\"Resync Minute\",\"resyncMin\",null,\"" + String(settings.resyncMin) + "\"],";
     j += "[\"NTP Interval (min)\",\"ntpInterval\",null,\"" + String(settings.ntpInterval) + "\"],";
-    j += "[\"Weather Messages\",\"weather\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.weather) + "\"],";
+    j += "[\"Weather Messages (warnings independent)\",\"weather\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.weather) + "\"],";
     j += "[\"Weather City\",\"weatherCity\",null,\"" + jsonEsc(settings.weatherCity) + "\"],";
     j += "[\"Show Weather City\",\"weatherCityShow\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.weatherCityShow) + "\"],";
     j += "[\"Weather Interval (min)\",\"weatherInterval\",null,\"" + String(settings.weatherInterval) + "\"],";
@@ -1077,10 +1095,9 @@ void handleWeatherPage()
 
     if (server.arg("format") == "json")
     {
-        double rainLimit = settings.rainThresh10 / 10.0;
         bool dataForCity = weatherDataValid && strcmp(weatherDataCity, settings.weatherCity) == 0;
-        bool warning = dataForCity && settings.rainWarn
-                    && (weatherPrecipRate >= rainLimit || weatherRainPeak >= rainLimit);
+        bool fresh = dataForCity && weatherDataFresh();
+        bool warning = fresh && settings.rainWarn && weatherRainLatched;
         unsigned long omAge = dataForCity ? (millis() - weatherUpdatedMs) / 1000UL : 0;
         String j;
         j.reserve(520);
@@ -1089,8 +1106,13 @@ void handleWeatherPage()
         j += ",\"rainWarn\":" + String(settings.rainWarn);
         j += ",\"warning\":" + String(warning ? 1 : 0);
         j += ",\"omValid\":" + String(dataForCity ? 1 : 0);
+        j += ",\"omStale\":" + String((dataForCity && !fresh) ? 1 : 0);
         j += ",\"omNow\":" + String(weatherPrecipRate, 1);
         j += ",\"omPeak\":" + String(weatherRainPeak, 1);
+        j += ",\"omProb\":" + String(weatherPrecipProb);
+        j += ",\"om1h\":" + String(weatherRain1h, 2);
+        j += ",\"om2h\":" + String(weatherRain2h, 2);
+        j += ",\"omCodeRain\":" + String(weatherRainCodeSoon ? 1 : 0);
         j += ",\"omTemp\":" + String(weatherTempC, 1);
         j += ",\"omHum\":" + String(weatherHumidity);
         j += ",\"omAge\":" + String(omAge);
@@ -1101,14 +1123,13 @@ void handleWeatherPage()
         return;
     }
 
-    double rainLimit = settings.rainThresh10 / 10.0;
     bool dataForCity = weatherDataValid && strcmp(weatherDataCity, settings.weatherCity) == 0;
-    bool warning = dataForCity && settings.rainWarn
-                && (weatherPrecipRate >= rainLimit || weatherRainPeak >= rainLimit);
+    bool fresh = dataForCity && weatherDataFresh();
+    bool warning = fresh && settings.rainWarn && weatherRainLatched;
     unsigned long age = dataForCity ? (millis() - weatherUpdatedMs) / 1000UL : 0;
 
     String page;
-    page.reserve(3200);
+    page.reserve(4200);
     page += "<!DOCTYPE html><html><head><meta charset=utf-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             "<meta name=theme-color content='#0a0d0b'>"
@@ -1126,8 +1147,10 @@ void handleWeatherPage()
             "</style></head><body><div class=wrap><h1>Rain / Weather</h1><div class=city>";
     page += settings.weatherCity[0] ? settings.weatherCity : "No weather city configured";
     page += "</div><table>";
-    if (!settings.weather || settings.weatherCity[0] == 0)
-        page += "<tr><td>Status</td><td class=no>Weather is off</td></tr>";
+    if (settings.weatherCity[0] == 0)
+        page += "<tr><td>Status</td><td class=no>No weather city configured</td></tr>";
+    else if (!settings.weather && !settings.rainWarn && !settings.heatWarn)
+        page += "<tr><td>Status</td><td class=no>Weather and warnings are off</td></tr>";
     else if (!dataForCity)
     {
         page += "<tr><td>Status</td><td class=no>Waiting for first check</td></tr>";
@@ -1138,13 +1161,22 @@ void handleWeatherPage()
         char row[80];
         page += "<tr><td>Rain now</td><td class=big>";
         page += String(weatherPrecipRate, 1);
-        page += " mm/h</td></tr><tr><td>Next 2h peak</td><td class=big>";
+        page += " mm/h</td></tr><tr><td>Next 1h rain</td><td class=big>";
+        page += String(weatherRain1h, 2);
+        page += " mm</td></tr><tr><td>Next 2h rain</td><td class=big>";
+        page += String(weatherRain2h, 2);
+        page += " mm</td></tr><tr><td>Rain chance (2h)</td><td>";
+        page += String(weatherPrecipProb);
+        page += " %</td></tr><tr><td>Rain code in 2h</td><td>";
+        page += weatherRainCodeSoon ? "Yes" : "No";
+        page += "</td></tr><tr><td>Next 2h peak</td><td>";
         page += String(weatherRainPeak, 1);
         page += " mm/h</td></tr><tr><td>Your threshold</td><td>";
         page += tenthsStr(settings.rainThresh10);
         page += " mm/h</td></tr><tr><td>Rain warning</td><td class=";
         if (!settings.rainWarn) page += "no>Off";
-        else if (warning) page += "yes>WOULD TRIGGER";
+        else if (!fresh) page += "no>Unknown (stale data)";
+        else if (warning) page += "yes>ACTIVE";
         else page += "no>Not triggered";
         page += "</td></tr><tr><td>Temperature</td><td>";
         page += String(weatherTempC, 1);
@@ -1155,19 +1187,25 @@ void handleWeatherPage()
         page += "</td></tr><tr><td>Last check</td><td>";
         snprintf(row, sizeof row, "%lu s ago", age);
         page += row;
+        if (!fresh) page += " (STALE)";
         page += "</td></tr>";
     }
     page += "</table><div class=note>";
-    if (settings.weather)
+    if (settings.weather || settings.rainWarn || settings.heatWarn)
     {
         page += "The clock checks every ";
         page += String(settings.weatherInterval);
-        page += " min. It warns when the current rain rate or the peak rate "
-                "forecast for the next 2 hours reaches your threshold. This page "
-                "refreshes every 30 seconds.<br><br>"
+        page += " min. A rain warning is triggered by the current rain rate, by "
+                "forecast amount with probability (0.3 mm in the next hour or 0.6 mm "
+                "in the next two hours at 60%+ chance), or by a rain weather code. "
+                "A warning stays active through one dry check. Data older than three "
+                "checks (minimum 45 min) is stale and ignored. This page refreshes "
+                "every 30 seconds.<br><br>"
                 "Open-Meteo data is model forecast output, not a local rain gauge. "
                 "Outside central Europe and North America the 15-minute values are "
                 "interpolated from hourly model data.";
+        if (!settings.weather && (settings.rainWarn || settings.heatWarn))
+            page += "<br><br>Weather messages are off, but warnings are still checked.";
     }
     page += "<a href='/'>Back to settings</a></div></div></body></html>";
     sendChunked(200, "text/html", page);
@@ -1653,7 +1691,39 @@ bool geocodeCity()   // resolve settings.weatherCity to cached latitude/longitud
     return true;
 }
 
-bool fetchWeather(double& temp, int& hum, double& precip, double& rainNext, int& wmoCode)   // resolve the city once, then read current conditions + next-hour rain
+bool isRainCode(int code)
+{
+    // WMO codes: drizzle/rain, rain showers, thunderstorms.
+    return (code >= 51 && code <= 67) || (code >= 80 && code <= 82) || (code >= 95 && code <= 99);
+}
+
+bool weatherDataFresh()
+{
+    if (!weatherDataValid) return false;
+    unsigned long staleMs = (unsigned long) settings.weatherInterval * 180000UL;   // 3 intervals
+    if (staleMs < (unsigned long) WEATHER_STALE_MIN * 60000UL)
+        staleMs = (unsigned long) WEATHER_STALE_MIN * 60000UL;
+    return (millis() - weatherUpdatedMs) <= staleMs;
+}
+
+int parseJsonNumberArray(const String& s, const char* key, double* out, int maxCount)
+{
+    int p = s.indexOf(key);
+    if (p < 0) return 0;
+    p += (int) strlen(key);
+    int count = 0;
+    while (count < maxCount && p < (int) s.length())
+    {
+        while (p < (int) s.length() && (s[p] == ' ' || s[p] == ',')) p++;
+        if (p >= (int) s.length() || s[p] == ']') break;
+        out[count++] = atof(s.c_str() + p);
+        while (p < (int) s.length() && s[p] != ',' && s[p] != ']') p++;
+    }
+    return count;
+}
+
+bool fetchWeather(double& temp, int& hum, double& precip, double& rainNext, int& wmoCode,
+                  double& rain1h, double& rain2h, int& prob2h, bool& codeRainSoon)   // resolve the city once, then read current conditions + next-2h rain
 {
     static char geocodedCity[sizeof(settings.weatherCity)] = "";
     if (strcmp(geocodedCity, settings.weatherCity) != 0)
@@ -1661,6 +1731,12 @@ bool fetchWeather(double& temp, int& hum, double& precip, double& rainNext, int&
         if (!geocodeCity()) return false;
         strncpy(geocodedCity, settings.weatherCity, sizeof(geocodedCity) - 1);
         geocodedCity[sizeof(geocodedCity) - 1] = 0;
+        // A new city has a new weather history; do not carry a warning across.
+        weatherRainLatched = false;
+        weatherRainDryChecks = 0;
+        weatherRainLastRate = 0;
+        weatherRainLast1h = 0;
+        weatherRainLastProb = 0;
     }
     char latbuf[16];
     char lonbuf[16];
@@ -1668,7 +1744,7 @@ bool fetchWeather(double& temp, int& hum, double& precip, double& rainNext, int&
     snprintf(lonbuf, sizeof lonbuf, "%.5f", settings.weatherLon / 1000000.0);
     String url = String("http://api.open-meteo.com/v1/forecast?latitude=") + latbuf + "&longitude=" + lonbuf
                + "&current=temperature_2m,relative_humidity_2m,precipitation,weather_code"
-               + "&minutely_15=precipitation,weather_code&forecast_minutely_15=8";
+               + "&minutely_15=precipitation,precipitation_probability,weather_code&forecast_minutely_15=8";
     String resp;
     if (!httpGet(url, resp)) { Serial.println("Weather: forecast request failed"); return false; }
     temp = jsonDoubleAfter(resp, "\"temperature_2m\":");
@@ -1681,33 +1757,42 @@ bool fetchWeather(double& temp, int& hum, double& precip, double& rainNext, int&
     precip = precipRaw * 3600.0 / interval;   // normalize to mm/h so it matches the threshold
     int wmoKey = (curSec >= 0) ? resp.indexOf("\"weather_code\":", curSec) : -1;
     wmoCode = (wmoKey >= 0) ? (int) atof(resp.c_str() + wmoKey + (int) strlen("\"weather_code\":")) : 0;
-    // Peak rain rate over the next two hours. The 15-min values are sums, so
-    // multiply by 4 to get mm/h; this also gives a rolling 2-hour window.
+
+    // Forecast for the next two hours: 15-minute precipitation sums,
+    // precipitation probability and WMO weather codes.
+    double buckets[8];
+    double probs[8];
+    double codes[8];
+    int bucketCount = parseJsonNumberArray(resp, "\"precipitation\":[", buckets, 8);
+    int probCount = parseJsonNumberArray(resp, "\"precipitation_probability\":[", probs, 8);
+    int codeCount = parseJsonNumberArray(resp, "\"weather_code\":[", codes, 8);
     rainNext = 0;
-    int mp = resp.indexOf("\"minutely_15\":");
-    if (mp >= 0)
+    rain1h = 0;
+    rain2h = 0;
+    for (int i = 0; i < bucketCount; i++)
     {
-        mp = resp.indexOf("\"precipitation\":[", mp);
-        if (mp >= 0)
-        {
-            mp += (int) strlen("\"precipitation\":[");
-            int end = resp.indexOf(']', mp);
-            for (int i = 0; i < 8 && mp < end; i++)
-            {
-                double v = atof(resp.c_str() + mp) * 4.0;
-                if (v > rainNext) rainNext = v;
-                int comma = resp.indexOf(',', mp);
-                if (comma < 0 || comma >= end) break;
-                mp = comma + 1;
-            }
-        }
+        if (buckets[i] * 4.0 > rainNext) rainNext = buckets[i] * 4.0;   // mm/h
+        rain2h += buckets[i];
+        if (i < 4) rain1h += buckets[i];
     }
-    Serial.printf("Weather: %.1fC %d%% now %.1fmm/h peak2h %.1fmm/h code %d\r\n", temp, hum, precip, rainNext, wmoCode);
+    prob2h = 0;
+    for (int i = 0; i < probCount; i++)
+        if (probs[i] > prob2h) prob2h = (int) probs[i];
+    codeRainSoon = false;
+    for (int i = 0; i < codeCount; i++)
+        if (isRainCode((int) codes[i])) codeRainSoon = true;
+
+    Serial.printf("Weather: %.1fC %d%% now %.1fmm/h peak2h %.1fmm/h code %d | 1h %.2fmm 2h %.2fmm prob %d%% codeRain %d\r\n",
+                  temp, hum, precip, rainNext, wmoCode, rain1h, rain2h, prob2h, codeRainSoon ? 1 : 0);
     weatherTempC = (float) temp;
     weatherHumidity = hum;
     weatherPrecipRate = (float) precip;
     weatherRainPeak = (float) rainNext;
     weatherCode = wmoCode;
+    weatherPrecipProb = prob2h;
+    weatherRain1h = (float) rain1h;
+    weatherRain2h = (float) rain2h;
+    weatherRainCodeSoon = codeRainSoon;
     weatherUpdatedMs = millis();
     strncpy(weatherDataCity, settings.weatherCity, sizeof(weatherDataCity) - 1);
     weatherDataCity[sizeof(weatherDataCity) - 1] = 0;
@@ -3413,7 +3498,8 @@ void loop() {
                 }
             }
         }
-        if (!otaBusy && rtcInitialized && settings.weather && WiFi.status() == WL_CONNECTED && strlen(settings.weatherCity) > 0)   // periodic Open-Meteo update
+        bool weatherNeeded = settings.weather || settings.rainWarn || settings.heatWarn;
+        if (!otaBusy && rtcInitialized && weatherNeeded && WiFi.status() == WL_CONNECTED && strlen(settings.weatherCity) > 0)   // periodic Open-Meteo update
         {
             static unsigned long weatherLast = 0;
             static bool weatherArmed = false;
@@ -3442,28 +3528,92 @@ void loop() {
                 int hum;
                 double precip;
                 double rainNext;
+                double rain1h;
+                double rain2h;
+                int prob2h;
+                bool codeRainSoon;
                 int wmoCode;
-                if (fetchWeather(temp, hum, precip, rainNext, wmoCode))
+                if (fetchWeather(temp, hum, precip, rainNext, wmoCode, rain1h, rain2h, prob2h, codeRainSoon))
                 {
                     double rainLimit = settings.rainThresh10 / 10.0;
                     double heatLimit = settings.heatThresh10 / 10.0;
-                    Serial.printf("Weather check: %.1fC (heat %s, limit %.1f), now %.1fmm/h peak2h %.1fmm/h (rain %s, limit %.1f, code %d)\r\n",
-                                  temp, settings.heatWarn ? "on" : "off", heatLimit,
-                                  precip, rainNext, settings.rainWarn ? "on" : "off", rainLimit, wmoCode);
-                    char buf[160];
-                    uint8_t alertType = ALERT_ANIM_NONE;
                     bool rainNow = settings.rainWarn && precip >= rainLimit;
-                    bool rainSoon = settings.rainWarn && rainNext >= rainLimit;
-                    if (rainNow || rainSoon)
+                    bool rainCodeNow = settings.rainWarn && isRainCode(wmoCode)
+                                    && precip >= 0.05 && prob2h >= RAIN_PROB_NOW_MIN;
+                    bool rainSoon = settings.rainWarn && prob2h >= RAIN_PROB_MIN
+                                 && (rain1h >= RAIN_AMOUNT_1H_MM || rain2h >= RAIN_AMOUNT_2H_MM);
+                    bool rainByCode = settings.rainWarn && codeRainSoon
+                                   && prob2h >= RAIN_PROB_MIN
+                                   && rain2h >= RAIN_CODE_AMOUNT_2H_MM;
+                    bool rainSignal = rainNow || rainCodeNow || rainSoon || rainByCode;
+
+                    if (!settings.rainWarn)
+                    {
+                        weatherRainLatched = false;
+                        weatherRainDryChecks = 0;
+                    }
+                    else if (rainSignal)
+                    {
+                        if (!weatherRainLatched)
+                            Serial.println("Rain warning: signal detected");
+                        weatherRainLatched = true;
+                        weatherRainDryChecks = 0;
+                        weatherRainLastRate = (float) precip;
+                        weatherRainLast1h = (float) rain1h;
+                        weatherRainLastProb = prob2h;
+                    }
+                    else if (weatherRainLatched)
+                    {
+                        if (weatherRainDryChecks < 255) weatherRainDryChecks++;
+                        if (weatherRainDryChecks >= 2)
+                        {
+                            weatherRainLatched = false;
+                            weatherRainDryChecks = 0;
+                            Serial.println("Rain warning: cleared after 2 dry checks");
+                        }
+                    }
+
+                    Serial.printf("Weather check: %.1fC (heat %s, limit %.1f), now %.1fmm/h peak2h %.1fmm/h, 1h %.2fmm 2h %.2fmm prob %d%% codeRain %d (rain %s, limit %.1f, code %d, signal %d, latched %d)\r\n",
+                                  temp, settings.heatWarn ? "on" : "off", heatLimit,
+                                  precip, rainNext, rain1h, rain2h, prob2h, codeRainSoon ? 1 : 0,
+                                  settings.rainWarn ? "on" : "off", rainLimit, wmoCode,
+                                  rainSignal ? 1 : 0, weatherRainLatched ? 1 : 0);
+                    char buf[160];
+                    buf[0] = 0;
+                    uint8_t alertType = ALERT_ANIM_NONE;
+                    if (weatherRainLatched)
                     {
                         alertType = ALERT_ANIM_RAIN;
-                        // Show the current rate plus the peak rate forecast for the next two hours.
-                        if (settings.weatherCityShow)
-                            snprintf(buf, sizeof buf, "RAIN WARNING: NOW %.1fmm/h NEXT 2H PEAK %.1fmm/h %s Outside Temp: %.1fC, Humidity: %d%%",
-                                     precip, rainNext, settings.weatherCity, temp, hum);
+                        bool ending = !rainSignal;
+                        if (ending)
+                        {
+                            // Hysteresis: keep the warning for one dry check, but say
+                            // clearly that the rain has stopped.
+                            if (settings.weatherCityShow)
+                                snprintf(buf, sizeof buf, "RAIN ENDING: LAST %.1fmm/h, LAST 1H %.1fmm %d%% %s Outside Temp: %.1fC, Humidity: %d%%",
+                                         weatherRainLastRate, weatherRainLast1h, weatherRainLastProb, settings.weatherCity, temp, hum);
+                            else
+                                snprintf(buf, sizeof buf, "RAIN ENDING: LAST %.1fmm/h, LAST 1H %.1fmm %d%% Outside Temp: %.1fC, Humidity: %d%%",
+                                         weatherRainLastRate, weatherRainLast1h, weatherRainLastProb, temp, hum);
+                        }
+                        else if (rainNow || rainCodeNow)
+                        {
+                            if (settings.weatherCityShow)
+                                snprintf(buf, sizeof buf, "RAIN WARNING: NOW %.1fmm/h 1H %.1fmm 2H %.1fmm %d%% %s Outside Temp: %.1fC, Humidity: %d%%",
+                                         precip, rain1h, rain2h, prob2h, settings.weatherCity, temp, hum);
+                            else
+                                snprintf(buf, sizeof buf, "RAIN WARNING: NOW %.1fmm/h 1H %.1fmm 2H %.1fmm %d%% Outside Temp: %.1fC, Humidity: %d%%",
+                                         precip, rain1h, rain2h, prob2h, temp, hum);
+                        }
                         else
-                            snprintf(buf, sizeof buf, "RAIN WARNING: NOW %.1fmm/h NEXT 2H PEAK %.1fmm/h Outside Temp: %.1fC, Humidity: %d%%",
-                                     precip, rainNext, temp, hum);
+                        {
+                            if (settings.weatherCityShow)
+                                snprintf(buf, sizeof buf, "RAIN LIKELY: 1H %.1fmm 2H %.1fmm %d%% %s Outside Temp: %.1fC, Humidity: %d%%",
+                                         rain1h, rain2h, prob2h, settings.weatherCity, temp, hum);
+                            else
+                                snprintf(buf, sizeof buf, "RAIN LIKELY: 1H %.1fmm 2H %.1fmm %d%% Outside Temp: %.1fC, Humidity: %d%%",
+                                         rain1h, rain2h, prob2h, temp, hum);
+                        }
                     }
                     else if (settings.heatWarn && temp >= heatLimit)
                     {
@@ -3473,14 +3623,19 @@ void loop() {
                         else
                             snprintf(buf, sizeof buf, "HEAT WARNING: %.1fC Outside Temp: %.1fC, Humidity: %d%%", heatLimit, temp, hum);
                     }
-                    else
+                    else if (settings.weather)
                     {
                         if (settings.weatherCityShow)
                             snprintf(buf, sizeof buf, "%s Outside Temp: %.1fC, Humidity: %d%%", settings.weatherCity, temp, hum);
                         else
                             snprintf(buf, sizeof buf, "Outside Temp: %.1fC, Humidity: %d%%", temp, hum);
                     }
-                    if (alertType != ALERT_ANIM_NONE && settings.warnAnim)
+
+                    if (buf[0] == 0)
+                    {
+                        // Warnings-only mode and no warning: nothing to display.
+                    }
+                    else if (alertType != ALERT_ANIM_NONE && settings.warnAnim)
                     {
                         weatherAlertActive = true;
                         weatherAlertMsgActive = false;
@@ -3502,7 +3657,7 @@ void loop() {
                     else
                         startMsg(buf, settings.weatherSpeed);
                 }
-                else
+                else if (settings.weather)
                     startMsg("WEATHER FAIL");
             }
         }
