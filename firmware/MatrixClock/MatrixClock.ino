@@ -32,11 +32,18 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.24"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.25"   // shown on the settings page
 //#define REVERSE_HORIZONTAL
 //#define REVERSE_VERTICAL
 //***************************Web Settings Page**********************************************************************
 // configurable settings, stored in EEPROM, editable via http://<clock-ip>/
+#define BIRTHDAY_MAX 6
+struct BirthdayEntry {
+    char name[20];
+    uint8_t day;
+    uint8_t month;
+    uint16_t year;   // 0 = no age shown
+};
 struct ClockSettings {
     uint32_t magic;          // 0xA5A5A5A5 if settings are valid
     char ssid[32];
@@ -78,9 +85,14 @@ struct ClockSettings {
     uint16_t rainThresh10;   // rain warning threshold in 0.1 mm (12 = 1.2 mm)
     uint16_t heatThresh10;   // heat warning threshold in 0.1 °C (355 = 35.5 °C)
     uint16_t threshFormat;   // 0xA55A when the tenths fields above are valid
+    uint8_t birthdayEnabled; // 0 = off, 1 = show birthday greetings
+    uint8_t birthdayFreq;    // repeat interval in minutes (0 = once per day)
+    uint8_t birthdayAnim;    // 0 = text only, 1 = birthday animation
+    BirthdayEntry birthdays[BIRTHDAY_MAX];
+    uint16_t birthdayFormat; // 0xB17D when the birthday fields are valid
 };
-ClockSettings settings = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 0, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A };
-const ClockSettings settings_defaults = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 0, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A };
+ClockSettings settings = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 0, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D };
+const ClockSettings settings_defaults = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 0, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D };
 bool rtcInitialized = false;
 bool apActive = false;              // AP fallback mode active (settings page accessible)
 bool apShutdownPending = false;     // stopAP ran; softAP shutdown deferred to a quieter moment
@@ -136,7 +148,8 @@ enum {
     ALERT_ANIM_SUKKAH,
     ALERT_ANIM_FLAG,
     ALERT_ANIM_MEMORIAL,
-    ALERT_ANIM_BONFIRE
+    ALERT_ANIM_BONFIRE,
+    ALERT_ANIM_BIRTHDAY
 };
 enum {
     HOLIDAY_NONE = 0,
@@ -628,6 +641,47 @@ void settings_load()
     uint8_t heatWhole = (uint8_t) constrain((settings.heatThresh10 + 5) / 10, 20, 50);
     if (settings.rainThresh != rainWhole) { settings.rainThresh = rainWhole; repaired = true; }
     if (settings.heatThresh != heatWhole) { settings.heatThresh = heatWhole; repaired = true; }
+    if (settings.birthdayFormat != 0xB17D)   // settings saved by older firmware
+    {
+        memset(settings.birthdays, 0, sizeof(settings.birthdays));
+        settings.birthdayEnabled = 1;
+        settings.birthdayFreq = 60;
+        settings.birthdayAnim = 1;
+        settings.birthdayFormat = 0xB17D;
+        repaired = true;
+    }
+    if (settings.birthdayEnabled > 1) { settings.birthdayEnabled = 1; repaired = true; }
+    if (settings.birthdayFreq != 0 && settings.birthdayFreq != 15 && settings.birthdayFreq != 30
+        && settings.birthdayFreq != 60 && settings.birthdayFreq != 120 && settings.birthdayFreq != 240)
+    { settings.birthdayFreq = 60; repaired = true; }
+    if (settings.birthdayAnim > 1) { settings.birthdayAnim = 1; repaired = true; }
+    for (uint8_t i = 0; i < BIRTHDAY_MAX; i++)
+    {
+        settings.birthdays[i].name[sizeof(settings.birthdays[i].name) - 1] = '\0';
+        for (unsigned j = 0; j < sizeof(settings.birthdays[i].name); j++)
+            if ((unsigned char) settings.birthdays[i].name[j] > 0x7E)
+            {
+                settings.birthdays[i].name[j] = '\0';
+                repaired = true;
+                break;
+            }
+        if (settings.birthdays[i].day == 0 && settings.birthdays[i].month == 0)
+            continue;
+        if (settings.birthdays[i].day < 1 || settings.birthdays[i].day > 31
+            || settings.birthdays[i].month < 1 || settings.birthdays[i].month > 12)
+        {
+            settings.birthdays[i].day = 0;
+            settings.birthdays[i].month = 0;
+            settings.birthdays[i].year = 0;
+            repaired = true;
+        }
+        else if (settings.birthdays[i].year != 0
+                 && (settings.birthdays[i].year < 1900 || settings.birthdays[i].year > 2100))
+        {
+            settings.birthdays[i].year = 0;
+            repaired = true;
+        }
+    }
     if (settings.digitAnim > 5) { settings.digitAnim = 1; repaired = true; }   // new field / garbage from old EEPROM -> roll
     if (settings.weatherCityShow > 1) { settings.weatherCityShow = 1; repaired = true; }   // new field / garbage from old EEPROM -> show city
     if (settings.warnAnim > 1) { settings.warnAnim = 1; repaired = true; }   // new field / garbage from old EEPROM -> animation on
@@ -656,6 +710,42 @@ void settings_load()
         }
     if (repaired)
         settings_save();   // persist the corrected fields so they don't need repairing on every boot
+}
+//**************************************************************************************************
+bool parseBirthdayDate(const String& s, uint8_t& day, uint8_t& month, uint16_t& year)
+{
+    String t = s;
+    t.trim();
+    if (t.length() == 0)
+    {
+        day = 0;
+        month = 0;
+        year = 0;
+        return true;
+    }
+    int p1 = t.indexOf('/');
+    int p2 = (p1 >= 0) ? t.indexOf('/', p1 + 1) : -1;
+    if (p1 < 0 || p2 < 0) return false;
+    int d = t.substring(0, p1).toInt();
+    int m = t.substring(p1 + 1, p2).toInt();
+    int y = t.substring(p2 + 1).toInt();
+    if (d < 1 || d > 31 || m < 1 || m > 12) return false;
+    if (y != 0 && (y < 1900 || y > 2100)) return false;
+    day = (uint8_t) d;
+    month = (uint8_t) m;
+    year = (uint16_t) y;
+    return true;
+}
+//**************************************************************************************************
+String birthdayDateStr(const BirthdayEntry& b)
+{
+    if (b.day == 0 || b.month == 0) return "";
+    char s[12];
+    if (b.year)
+        snprintf(s, sizeof s, "%02u/%02u/%04u", b.day, b.month, b.year);
+    else
+        snprintf(s, sizeof s, "%02u/%02u", b.day, b.month);
+    return String(s);
 }
 //**************************************************************************************************
 //***************************Web Settings Page**********************************************************************
@@ -916,7 +1006,7 @@ void handleValues()
     if (!webAuthOk()) { server.requestAuthentication(); return; }
     server.keepAlive(false);
     String j;
-    j.reserve(5200);
+    j.reserve(7000);
     j = "{\"f\":[";
     j += "[\"SSID\",\"ssid\",null,\"" + jsonEsc(settings.ssid) + "\"],";
     j += "[\"WiFi Password\",\"pass\",null,\"\"],";   // never return the saved password; leave blank to keep it
@@ -949,7 +1039,21 @@ void handleValues()
     j += "[\"Shabbat Message Frequency\",\"shabbatFreq\",[[\"5\",\"5 min\"],[\"10\",\"10 min\"],[\"15\",\"15 min\"],[\"20\",\"20 min\"],[\"30\",\"30 min\"],[\"60\",\"60 min\"]],\"" + String(settings.shabbatFreq) + "\"],";
     j += "[\"Shabbat Lead (min)\",\"shabbatLead\",[[\"10\",\"10 min\"],[\"15\",\"15 min\"],[\"20\",\"20 min\"],[\"30\",\"30 min\"],[\"45\",\"45 min\"],[\"60\",\"1 hour\"],[\"90\",\"1.5 h\"],[\"120\",\"2 h\"],[\"180\",\"3 h\"],[\"240\",\"4 h\"]],\"" + String(settings.shabbatLead) + "\"],";
     j += "[\"Shabbat Animation\",\"shabbatAnim\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.shabbatAnim) + "\"],";
-    j += "[\"Holiday Greetings\",\"holidayGreetings\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.holidayGreetings) + "\"]";
+    j += "[\"Holiday Greetings\",\"holidayGreetings\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.holidayGreetings) + "\"],";
+    j += "[\"Birthday Greetings\",\"birthdayEnabled\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.birthdayEnabled) + "\"],";
+    j += "[\"Birthday Message Frequency\",\"birthdayFreq\",[[\"0\",\"Once/day\"],[\"15\",\"15 min\"],[\"30\",\"30 min\"],[\"60\",\"1 hour\"],[\"120\",\"2 hours\"],[\"240\",\"4 hours\"]],\"" + String(settings.birthdayFreq) + "\"],";
+    j += "[\"Birthday Animation\",\"birthdayAnim\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.birthdayAnim) + "\"],";
+    for (uint8_t i = 0; i < BIRTHDAY_MAX; i++)
+    {
+        char label[32], key[16];
+        snprintf(label, sizeof label, "Birthday %u Name", (unsigned) (i + 1));
+        snprintf(key, sizeof key, "bday%uName", (unsigned) (i + 1));
+        j += "[\"" + String(label) + "\",\"" + key + "\",null,\"" + jsonEsc(settings.birthdays[i].name) + "\"],";
+        snprintf(label, sizeof label, "Birthday %u Date (DD/MM/YYYY)", (unsigned) (i + 1));
+        snprintf(key, sizeof key, "bday%uDate", (unsigned) (i + 1));
+        j += "[\"" + String(label) + "\",\"" + key + "\",null,\"" + birthdayDateStr(settings.birthdays[i]) + "\"]";
+        if (i + 1 < BIRTHDAY_MAX) j += ",";
+    }
     j += "]}";
     server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
     server.sendHeader("Pragma", "no-cache");
@@ -1121,6 +1225,11 @@ void handleReset()
     settings.rainThresh10 = 20;
     settings.heatThresh10 = 310;
     settings.threshFormat = 0xA55A;
+    settings.birthdayEnabled = 1;
+    settings.birthdayFreq = 60;
+    settings.birthdayAnim = 1;
+    memset(settings.birthdays, 0, sizeof(settings.birthdays));
+    settings.birthdayFormat = 0xB17D;
     settings_save();
     Serial.printf("Settings reset: NTP=%s rain=%d/%smm heat=%d/%sC\r\n",
                   settings.ntpServer, settings.rainWarn, tenthsStr(settings.rainThresh10).c_str(),
@@ -1204,6 +1313,39 @@ void handleSave()
     if (server.hasArg("shabbatLead")) settings.shabbatLead = (uint8_t) constrain(server.arg("shabbatLead").toInt(), 10, 240);
     settings.shabbatAnim = (uint8_t) (server.arg("shabbatAnim").toInt() ? 1 : 0);
     settings.holidayGreetings = (uint8_t) (server.arg("holidayGreetings").toInt() ? 1 : 0);
+    settings.birthdayEnabled = (uint8_t) (server.arg("birthdayEnabled").toInt() ? 1 : 0);
+    if (server.hasArg("birthdayFreq")) settings.birthdayFreq = (uint8_t) constrain(server.arg("birthdayFreq").toInt(), 0, 240);
+    if (settings.birthdayFreq != 0 && settings.birthdayFreq != 15 && settings.birthdayFreq != 30
+        && settings.birthdayFreq != 60 && settings.birthdayFreq != 120 && settings.birthdayFreq != 240)
+        settings.birthdayFreq = 60;
+    settings.birthdayAnim = (uint8_t) (server.arg("birthdayAnim").toInt() ? 1 : 0);
+    for (uint8_t i = 0; i < BIRTHDAY_MAX; i++)
+    {
+        char key[16];
+        snprintf(key, sizeof key, "bday%uName", (unsigned) (i + 1));
+        String name = server.arg(key);
+        snprintf(key, sizeof key, "bday%uDate", (unsigned) (i + 1));
+        String date = server.arg(key);
+        uint8_t d, m;
+        uint16_t y;
+        bool ok = parseBirthdayDate(date, d, m, y) && d != 0 && name.length() > 0;
+        if (!ok)
+        {
+            settings.birthdays[i].name[0] = 0;
+            settings.birthdays[i].day = 0;
+            settings.birthdays[i].month = 0;
+            settings.birthdays[i].year = 0;
+        }
+        else
+        {
+            strncpy(settings.birthdays[i].name, name.c_str(), sizeof(settings.birthdays[i].name) - 1);
+            settings.birthdays[i].name[sizeof(settings.birthdays[i].name) - 1] = 0;
+            settings.birthdays[i].day = d;
+            settings.birthdays[i].month = m;
+            settings.birthdays[i].year = y;
+        }
+    }
+    settings.birthdayFormat = 0xB17D;
     settings.dstRule = (uint8_t) constrain(server.arg("dst").toInt(), 0, 3);
     settings_save();
     Serial.printf("Settings saved, SSID:%s PSW:%s WPAUTH:%s\r\n", settings.ssid, passHidden(settings.pass), settings.webPass[0] ? "set" : "none");
@@ -1864,10 +2006,11 @@ uint8_t holidayAnimation(uint8_t type)
 void holidayTick()   // once per minute: fetch this month's holidays and greet on the day
 {
     if (!settings.holidayGreetings || !rtcInitialized) return;
-    if (MEZ.jahr12 < 2024) return;   // wait for a valid RTC/NTP date, avoid a false New Year on 2000-01-01
+    uint16_t fullYear = 2000 + MEZ.jahr12;
+    if (fullYear < 2024) return;   // wait for a valid RTC/NTP date, avoid a false New Year on 2000-01-01
     if (Update.isRunning() || otaRebootAt != 0) return;   // don't block or interrupt a firmware update
 
-    uint32_t todayKey = ((uint32_t) MEZ.jahr12 * 10000UL)
+    uint32_t todayKey = ((uint32_t) fullYear * 10000UL)
                       + ((uint32_t) MEZ.mon12 * 100UL)
                       + MEZ.tag12;
     uint8_t type = HOLIDAY_NONE;
@@ -1878,7 +2021,7 @@ void holidayTick()   // once per minute: fetch this month's holidays and greet o
         type = HOLIDAY_CHRISTMAS;
     else
     {
-        uint16_t monthKey = (uint16_t) (MEZ.jahr12 * 12 + MEZ.mon12);
+        uint16_t monthKey = (uint16_t) (fullYear * 12 + MEZ.mon12);
         if (monthKey != holidayFetchMonth)
         {
             holidayFetchMonth = monthKey;
@@ -1889,7 +2032,7 @@ void holidayTick()   // once per minute: fetch this month's holidays and greet o
             && (holidayLastFetch == 0 || millis() - holidayLastFetch > 5UL * 60000UL))
         {
             holidayLastFetch = millis();
-            holidayFetchOk = fetchHolidayMonth(MEZ.jahr12, MEZ.mon12);
+            holidayFetchOk = fetchHolidayMonth(fullYear, MEZ.mon12);
         }
         if (holidayFetchOk)
             type = holidayTypeForDay(MEZ.tag12);
@@ -1905,6 +2048,95 @@ void holidayTick()   // once per minute: fetch this month's holidays and greet o
         startAlertAnimation(anim, text, 2);
     else
         startMsg(text, 2);
+}
+
+void birthdayTick()   // once per minute: greet family birthdays
+{
+    if (!settings.birthdayEnabled || !rtcInitialized) return;
+    uint16_t fullYear = 2000 + MEZ.jahr12;
+    if (fullYear < 2024) return;   // wait for a valid RTC/NTP date
+    if (Update.isRunning() || otaRebootAt != 0) return;
+
+    uint32_t todayKey = ((uint32_t) fullYear * 10000UL)
+                      + ((uint32_t) MEZ.mon12 * 100UL)
+                      + MEZ.tag12;
+    static uint32_t birthdayDate = 0;
+    static unsigned long lastBirthdayMsg = 0;
+    static uint8_t nextBirthday = 0;
+    static bool birthdayDoneToday = false;
+    if (todayKey != birthdayDate)
+    {
+        birthdayDate = todayKey;
+        lastBirthdayMsg = 0;
+        nextBirthday = 0;
+        birthdayDoneToday = false;
+    }
+
+    bool any = false;
+    for (uint8_t i = 0; i < BIRTHDAY_MAX; i++)
+        if (settings.birthdays[i].day == MEZ.tag12 && settings.birthdays[i].month == MEZ.mon12
+            && settings.birthdays[i].name[0] != 0)
+            any = true;
+    if (!any) return;
+
+    if (settings.birthdayFreq == 0)
+    {
+        if (birthdayDoneToday) return;
+        birthdayDoneToday = true;
+        bool firstBirthday = true;
+        for (uint8_t i = 0; i < BIRTHDAY_MAX; i++)
+        {
+            if (settings.birthdays[i].day != MEZ.tag12 || settings.birthdays[i].month != MEZ.mon12
+                || settings.birthdays[i].name[0] == 0)
+                continue;
+            char msg[80];
+            int age = 0;
+            if (settings.birthdays[i].year && fullYear >= settings.birthdays[i].year)
+                age = fullYear - settings.birthdays[i].year;
+            if (age > 0)
+                snprintf(msg, sizeof msg, "HAPPY BIRTHDAY %s! %d YEARS OLD", settings.birthdays[i].name, age);
+            else
+                snprintf(msg, sizeof msg, "HAPPY BIRTHDAY %s!", settings.birthdays[i].name);
+            if (settings.birthdayAnim && firstBirthday)
+                startAlertAnimation(ALERT_ANIM_BIRTHDAY, msg, 2);
+            else
+                startMsg(msg, 2);
+            firstBirthday = false;
+        }
+        return;
+    }
+
+    if (lastBirthdayMsg != 0
+        && (millis() - lastBirthdayMsg) < (unsigned long) settings.birthdayFreq * 60000UL)
+        return;
+
+    int8_t found = -1;
+    for (uint8_t k = 0; k < BIRTHDAY_MAX; k++)
+    {
+        uint8_t i = (nextBirthday + k) % BIRTHDAY_MAX;
+        if (settings.birthdays[i].day == MEZ.tag12 && settings.birthdays[i].month == MEZ.mon12
+            && settings.birthdays[i].name[0] != 0)
+        {
+            found = (int8_t) i;
+            break;
+        }
+    }
+    if (found < 0) return;
+    nextBirthday = (uint8_t) ((found + 1) % BIRTHDAY_MAX);
+    lastBirthdayMsg = millis();
+
+    char msg[80];
+    int age = 0;
+    if (settings.birthdays[found].year && fullYear >= settings.birthdays[found].year)
+        age = fullYear - settings.birthdays[found].year;
+    if (age > 0)
+        snprintf(msg, sizeof msg, "HAPPY BIRTHDAY %s! %d YEARS OLD", settings.birthdays[found].name, age);
+    else
+        snprintf(msg, sizeof msg, "HAPPY BIRTHDAY %s!", settings.birthdays[found].name);
+    if (settings.birthdayAnim)
+        startAlertAnimation(ALERT_ANIM_BIRTHDAY, msg, 2);
+    else
+        startMsg(msg, 2);
 }
 
 void shabbatMinuteTick(uint16_t nowMin)   // called once per minute from the 1s block
@@ -2860,6 +3092,27 @@ void drawAlertAnimation(uint8_t type, uint16_t frame)
         for (uint8_t i = 0; i < 4; i++)
             if (((frame / 3) + i) % 2 == 0)
                 setLedPixel(sparkX[i], (frame / 4 + i * 2) % 5);
+    } else if (type == ALERT_ANIM_BIRTHDAY) {
+        // Birthday cake with candles, balloons and confetti.
+        for (int x = 10; x <= 21; x++) setLedPixel(x, 7);
+        for (int x = 11; x <= 20; x++) setLedPixel(x, 6);
+        for (int x = 12; x <= 19; x++) setLedPixel(x, 5);
+        static const uint8_t candleX[3] = { 13, 16, 19 };
+        for (uint8_t i = 0; i < 3; i++) {
+            int cx = candleX[i];
+            for (int y = 2; y <= 4; y++) setLedPixel(cx, y);
+            setLedPixel(cx, 1);
+            uint8_t flicker = (frame / 2 + i) % 3;
+            if (flicker == 0) setLedPixel(cx - 1, 2);
+            else if (flicker == 1) setLedPixel(cx + 1, 2);
+        }
+        setLedPixel(4, 1); setLedPixel(3, 2); setLedPixel(5, 2); setLedPixel(4, 3);
+        for (int y = 4; y <= 6; y++) setLedPixel(4, y);
+        setLedPixel(27, 1); setLedPixel(26, 2); setLedPixel(28, 2); setLedPixel(27, 3);
+        for (int y = 4; y <= 6; y++) setLedPixel(27, y);
+        for (int x = 0; x < 32; x++)
+            if (((x + (int) (frame / 2)) % 9) == 0)
+                setLedPixel(x, 1 + (x + (int) (frame / 3)) % 4);
     }
 }
 
@@ -3377,6 +3630,7 @@ void loop() {
                     lastMinute = nowMin;
                     shabbatMinuteTick(nowMin);
                     holidayTick();
+                    birthdayTick();
                 }
             }
             if (settings.scrollDate && !alertAnimActive)   // scroll the date at the chosen interval
