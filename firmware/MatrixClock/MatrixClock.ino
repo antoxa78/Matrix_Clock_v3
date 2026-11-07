@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.22"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.23"   // shown on the settings page
 //#define REVERSE_HORIZONTAL
 //#define REVERSE_VERTICAL
 //***************************Web Settings Page**********************************************************************
@@ -1160,7 +1160,7 @@ void handleSave()
     settings.weather = (uint8_t) (server.arg("weather").toInt() ? 1 : 0);
     strncpy(settings.weatherCity, server.arg("weatherCity").c_str(), sizeof(settings.weatherCity) - 1);
     settings.weatherCity[sizeof(settings.weatherCity) - 1] = '\0';
-    if (server.hasArg("weatherCityShow")) settings.weatherCityShow = (uint8_t) (server.arg("weatherCityShow").toInt() ? 1 : 0);
+    settings.weatherCityShow = (uint8_t) (server.arg("weatherCityShow").toInt() ? 1 : 0);
     settings.weatherInterval = (uint16_t) constrain(server.arg("weatherInterval").toInt(), 1, 240);
     settings.weatherSpeed = (uint8_t) constrain(server.arg("weatherSpeed").toInt(), 1, 4);
     settings.rainWarn = (uint8_t) (server.arg("rainWarn").toInt() ? 1 : 0);
@@ -1186,11 +1186,11 @@ void handleSave()
     settings.rainThresh = (uint8_t) constrain((settings.rainThresh10 + 5) / 10, 1, 25);   // keep legacy field in sync
     settings.heatThresh = (uint8_t) constrain((settings.heatThresh10 + 5) / 10, 20, 50);
     settings.threshFormat = 0xA55A;
-    if (server.hasArg("warnAnim")) settings.warnAnim = (uint8_t) (server.arg("warnAnim").toInt() ? 1 : 0);
-    if (server.hasArg("shabbat")) settings.shabbat = (uint8_t) (server.arg("shabbat").toInt() ? 1 : 0);
+    settings.warnAnim = (uint8_t) (server.arg("warnAnim").toInt() ? 1 : 0);
+    settings.shabbat = (uint8_t) (server.arg("shabbat").toInt() ? 1 : 0);
     if (server.hasArg("shabbatFreq")) settings.shabbatFreq = (uint8_t) constrain(server.arg("shabbatFreq").toInt(), 5, 60);
     if (server.hasArg("shabbatLead")) settings.shabbatLead = (uint8_t) constrain(server.arg("shabbatLead").toInt(), 10, 240);
-    if (server.hasArg("shabbatAnim")) settings.shabbatAnim = (uint8_t) (server.arg("shabbatAnim").toInt() ? 1 : 0);
+    settings.shabbatAnim = (uint8_t) (server.arg("shabbatAnim").toInt() ? 1 : 0);
     settings.holidayGreetings = (uint8_t) (server.arg("holidayGreetings").toInt() ? 1 : 0);
     settings.dstRule = (uint8_t) constrain(server.arg("dst").toInt(), 0, 3);
     settings_save();
