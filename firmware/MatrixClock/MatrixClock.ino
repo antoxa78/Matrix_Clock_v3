@@ -33,7 +33,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.17"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.18"   // shown on the settings page
 //#define REVERSE_HORIZONTAL
 //#define REVERSE_VERTICAL
 //***************************Web Settings Page**********************************************************************
@@ -1217,11 +1217,15 @@ void handleReset()
 void handleSave()
 {
     if (!webAuthOk()) { server.requestAuthentication(); return; }
-    strncpy(settings.ssid, server.arg("ssid").c_str(), sizeof(settings.ssid) - 1);
+    String newSsid = server.arg("ssid");
+    String newPass = server.arg("pass");
+    bool wifiChanged = (strcmp(settings.ssid, newSsid.c_str()) != 0)
+                    || (newPass.length() > 0 && strcmp(settings.pass, newPass.c_str()) != 0);
+    strncpy(settings.ssid, newSsid.c_str(), sizeof(settings.ssid) - 1);
     settings.ssid[sizeof(settings.ssid) - 1] = '\0';
-    if (server.arg("pass").length() > 0)   // blank field = keep the saved password
+    if (newPass.length() > 0)   // blank field = keep the saved password
     {
-        strncpy(settings.pass, server.arg("pass").c_str(), sizeof(settings.pass) - 1);
+        strncpy(settings.pass, newPass.c_str(), sizeof(settings.pass) - 1);
         settings.pass[sizeof(settings.pass) - 1] = '\0';
     }
     if (server.hasArg("webPass"))
@@ -1290,21 +1294,30 @@ void handleSave()
     settings.dstRule = (uint8_t) constrain(server.arg("dst").toInt(), 0, 3);
     settings_save();
     Serial.printf("Settings saved, SSID:%s PSW:%s WPAUTH:%s\r\n", settings.ssid, passHidden(settings.pass), settings.webPass[0] ? "set" : "none");
-    sendChunked(200, "text/html", "<!DOCTYPE html><html><head><meta charset=utf-8>"
-        "<meta name=viewport content='width=device-width,initial-scale=1'>"
-        "<meta name=theme-color content='#0a0d0b'>"
-        "<meta http-equiv=\"refresh\" content=\"15; url=/\"><title>Saved</title><style>"
-        "body{margin:0;background:#0a0d0b;color:#e8f0ec;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;text-align:center;padding:72px 24px;min-height:100vh;box-sizing:border-box}"
-        ".ok{font-size:44px;color:#22e07a;text-shadow:0 0 20px rgba(34,224,122,.45)}"
-        "h2{color:#22e07a;font-size:20px;margin:14px 0 6px}"
-        "p{color:#7c8c84;font-size:14px}"
-        "</style></head><body>"
-        "<div class=ok>&#10003;</div>"
-        "<h2>Settings saved</h2><p>Restarting the clock in a few seconds...</p>"
-        "</body></html>");
+    String page;
+    page.reserve(900);
+    page = "<!DOCTYPE html><html><head><meta charset=utf-8>"
+           "<meta name=viewport content='width=device-width,initial-scale=1'>"
+           "<meta name=theme-color content='#0a0d0b'>"
+           "<meta http-equiv=\"refresh\" content=\"";
+    page += wifiChanged ? "20" : "2";
+    page += "; url=/\"><title>Saved</title><style>"
+            "body{margin:0;background:#0a0d0b;color:#e8f0ec;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;text-align:center;padding:72px 24px;min-height:100vh;box-sizing:border-box}"
+            ".ok{font-size:44px;color:#22e07a;text-shadow:0 0 20px rgba(34,224,122,.45)}"
+            "h2{color:#22e07a;font-size:20px;margin:14px 0 6px}"
+            "p{color:#7c8c84;font-size:14px}"
+            "</style></head><body>"
+            "<div class=ok>&#10003;</div>"
+            "<h2>Settings saved</h2><p>";
+    page += wifiChanged ? "WiFi changed. Reconnecting..." : "Applied. Returning to settings...";
+    page += "</p></body></html>";
+    sendChunked(200, "text/html", page);
     server.client().stop();   // close TCP cleanly so the browser gets the full response
-    delay(2000);
-    ESP.restart();
+    if (wifiChanged)
+    {
+        delay(2000);
+        ESP.restart();
+    }
 }
 //**************************************************************************************************
 //***************************Web Firmware Update**********************************************************************
