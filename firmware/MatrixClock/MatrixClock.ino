@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.3.9"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.3.10"   // shown on the settings page
 
 // Rain warning tuning. The current rain rate uses settings.rainThresh10;
 // these values control the forecast-based part of the warning.
@@ -76,7 +76,7 @@ struct ClockSettings {
     uint16_t weatherInterval; // weather update interval in minutes
     int32_t weatherLat;      // cached latitude  * 1e6 (geocoded from city)
     int32_t weatherLon;      // cached longitude * 1e6
-    uint8_t weatherSpeed;    // weather message scroll speed: 1=slow, 2=normal, 3=fast, 4=very fast
+    uint8_t weatherSpeed;    // weather message scroll speed: 1=slow, 2=normal, 3=fast
     uint16_t scrollDateInt;  // minutes between date scrolls (default 1 = every minute)
     uint8_t rainWarn;        // 0 = off, 1 = show RAIN WARNING when precipitation >= threshold
     uint8_t heatWarn;        // 0 = off, 1 = show HEAT WARNING when temperature >= threshold
@@ -105,9 +105,11 @@ struct ClockSettings {
     uint16_t detailFormat;   // 0xDE7A when the weatherDetails field is valid
     uint8_t textEffect;      // message effect: 0=scroll, 1=fade, 2=slide down, 3=slide up, 4=blink
     uint16_t textFxFormat;   // 0xEFF4 when the textEffect field is valid
+    uint8_t dateSpeed;       // date scroll speed: 1=slow, 2=normal, 3=fast
+    uint16_t dateSpeedFormat; // 0xDA7E when the dateSpeed field is valid
 };
-ClockSettings settings = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF4 };
-const ClockSettings settings_defaults = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF4 };
+ClockSettings settings = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF4, 2, 0xDA7E };
+const ClockSettings settings_defaults = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF4, 2, 0xDA7E };
 bool rtcInitialized = false;
 bool apActive = false;              // AP fallback mode active (settings page accessible)
 bool apShutdownPending = false;     // stopAP ran; softAP shutdown deferred to a quieter moment
@@ -125,7 +127,9 @@ int d_PosX = 0;
 bool showMsg = false;                                // a message is scrolling across the display
 char msg[120] = "";
 uint8_t msgStep = 2;                                 // current message scroll speed (px per 50ms tick)
-unsigned long msgEffectStartMs = 0;
+bool pacmanActive = false;                            // Pac-Man runs after a message finishes
+uint8_t pacmanFrame = 0;
+uint16_t pacmanRuns = 0;
 #define MSG_QUEUE_SIZE 3
 char msgQueue[MSG_QUEUE_SIZE][120];
 uint8_t msgQueueStep[MSG_QUEUE_SIZE];
@@ -660,7 +664,8 @@ void settings_load()
     if (settings.ntpInterval > 720) { settings.ntpInterval = 0; repaired = true; }   // field added later / garbage from old EEPROM -> off
     if (settings.weather > 1) { settings.weather = 0; repaired = true; }   // new fields: 0xFF from older firmware = off
     if (settings.weatherInterval > 240 || settings.weatherInterval == 0) { settings.weatherInterval = 30; repaired = true; }
-    if (settings.weatherSpeed < 1 || settings.weatherSpeed > 4) { settings.weatherSpeed = 2; repaired = true; }   // new field / garbage from old EEPROM -> normal
+    if (settings.weatherSpeed == 4) { settings.weatherSpeed = 3; repaired = true; }   // VFast removed -> Fast
+    else if (settings.weatherSpeed < 1 || settings.weatherSpeed > 3) { settings.weatherSpeed = 2; repaired = true; }   // new field / garbage from old EEPROM -> normal
     if (settings.scrollDateInt < 1 || settings.scrollDateInt > 120) { settings.scrollDateInt = 1; repaired = true; }   // new field -> every minute
     if (settings.rainWarn > 1) { settings.rainWarn = 1; repaired = true; }   // new field / garbage from old EEPROM -> on
     if (settings.heatWarn > 1) { settings.heatWarn = 1; repaired = true; }   // new field / garbage from old EEPROM -> on
@@ -740,6 +745,13 @@ void settings_load()
         repaired = true;
     }
     if (settings.textEffect > 4) { settings.textEffect = 0; repaired = true; }
+    if (settings.dateSpeedFormat != 0xDA7E)
+    {
+        settings.dateSpeed = 2;
+        settings.dateSpeedFormat = 0xDA7E;
+        repaired = true;
+    }
+    if (settings.dateSpeed < 1 || settings.dateSpeed > 3) { settings.dateSpeed = 2; repaired = true; }
     if (settings.holidayFreq != 0 && settings.holidayFreq != 15 && settings.holidayFreq != 30
         && settings.holidayFreq != 60 && settings.holidayFreq != 120 && settings.holidayFreq != 240)
     { settings.holidayFreq = 0; repaired = true; }
@@ -901,10 +913,10 @@ void startMsgNow(const char* text, uint8_t step)
     msg[sizeof(msg) - 1] = 0;
     msgStep = step;
     showMsg = true;
+    pacmanActive = false;
     max7219_set_brightness(settings.brightness);
     z_PosX = 0;
     d_PosX = -8;
-    msgEffectStartMs = millis();
 }
 
 void startNextQueuedMsg()
@@ -920,10 +932,10 @@ void startNextQueuedMsg()
     }
     msgQueueCount--;
     showMsg = true;
+    pacmanActive = false;
     max7219_set_brightness(settings.brightness);
     z_PosX = 0;
     d_PosX = -8;
-    msgEffectStartMs = millis();
 }
 
 void startMsg(const char* text, uint8_t step)   // scroll a message; queue up to 3 so weather/Shabbat are not lost
@@ -1088,6 +1100,7 @@ void handleValues()
     j += "[\"Orientation\",\"orient\",[[\"1\",\"Norm\"],[\"2\",\"Flip\"]],\"" + String(settings.orient) + "\"],";
     j += "[\"Scroll Date\",\"scrollDate\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.scrollDate) + "\"],";
     j += "[\"Date Interval (min)\",\"scrollDateInt\",null,\"" + String(settings.scrollDateInt) + "\"],";
+    j += "[\"Date Scroll Speed\",\"dateSpeed\",[[\"1\",\"Slow\"],[\"2\",\"Norm\"],[\"3\",\"Fast\"]],\"" + String(settings.dateSpeed) + "\"],";
     j += "[\"Digit Animation Direction\",\"scrollDir\",[[\"0\",\"Up-Down\"],[\"1\",\"Down-Up\"]],\"" + String(settings.scrollDir) + "\"],";
     j += "[\"Colon Animation\",\"colonAnim\",[[\"0\",\"Solid\"],[\"1\",\"Blink\"],[\"2\",\"Slow\"],[\"3\",\"Dbl\"],[\"4\",\"Alt\"],[\"5\",\"Center Out\"]],\"" + String(settings.colonAnim) + "\"],";
     j += "[\"Digit Animation\",\"digitAnim\",[[\"0\",\"Off\"],[\"1\",\"Roll\"],[\"2\",\"Flip\"],[\"3\",\"Wipe\"],[\"4\",\"Fade\"],[\"5\",\"Drop\"]],\"" + String(settings.digitAnim) + "\"],";
@@ -1100,7 +1113,7 @@ void handleValues()
     j += "[\"Weather City\",\"weatherCity\",null,\"" + jsonEsc(settings.weatherCity) + "\"],";
     j += "[\"Show Weather City\",\"weatherCityShow\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.weatherCityShow) + "\"],";
     j += "[\"Weather Interval (min)\",\"weatherInterval\",null,\"" + String(settings.weatherInterval) + "\"],";
-    j += "[\"Weather Speed\",\"weatherSpeed\",[[\"1\",\"Slow\"],[\"2\",\"Norm\"],[\"3\",\"Fast\"],[\"4\",\"VFast\"]],\"" + String(settings.weatherSpeed) + "\"],";
+    j += "[\"Weather Speed\",\"weatherSpeed\",[[\"1\",\"Slow\"],[\"2\",\"Norm\"],[\"3\",\"Fast\"]],\"" + String(settings.weatherSpeed) + "\"],";
     j += "[\"Weather Details\",\"weatherDetails\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.weatherDetails) + "\"],";
     j += "[\"Rain Warning\",\"rainWarn\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.rainWarn) + "\"],";
     j += "[\"Rain Threshold (mm/h, e.g. 1.2)\",\"rainThresh\",null,\"" + tenthsStr(settings.rainThresh10) + "\"],";
@@ -1302,6 +1315,7 @@ void handleStatus()
     j += ",\"rtcAging\":" + String(rtc_aging());
     j += ",\"detailCount\":" + String(weatherDetailCount);
     j += ",\"detailPage\":" + String(weatherDetailLastPage);
+    j += ",\"pacman\":" + String(pacmanRuns);
     j += ",\"orient\":" + String(settings.orient);
     j += ",\"kk\":" + String(kk ? 1 : 0);
     j += "}";
@@ -1361,6 +1375,8 @@ void handleReset()
     settings.detailFormat = 0xDE7A;
     settings.textEffect = 0;
     settings.textFxFormat = 0xEFF4;
+    settings.dateSpeed = 2;
+    settings.dateSpeedFormat = 0xDA7E;
     settings_save();
     Serial.printf("Settings reset: NTP=%s rain=%d/%smm heat=%d/%sC\r\n",
                   settings.ntpServer, settings.rainWarn, tenthsStr(settings.rainThresh10).c_str(),
@@ -1400,6 +1416,8 @@ void handleSave()
     settings.orient = (uint8_t) constrain(server.arg("orient").toInt(), 1, 2);
     settings.scrollDate = (uint8_t) (server.arg("scrollDate").toInt() ? 1 : 0);
     settings.scrollDateInt = (uint16_t) constrain(server.arg("scrollDateInt").toInt(), 1, 120);
+    if (server.hasArg("dateSpeed")) settings.dateSpeed = (uint8_t) constrain(server.arg("dateSpeed").toInt(), 1, 3);
+    settings.dateSpeedFormat = 0xDA7E;
     settings.scrollDir = (uint8_t) (server.arg("scrollDir").toInt() ? 1 : 0);
     settings.colonAnim = (uint8_t) constrain(server.arg("colonAnim").toInt(), 0, 5);
     if (server.hasArg("digitAnim")) settings.digitAnim = (uint8_t) constrain(server.arg("digitAnim").toInt(), 0, 5);
@@ -1416,7 +1434,7 @@ void handleSave()
     settings.weatherCity[sizeof(settings.weatherCity) - 1] = '\0';
     settings.weatherCityShow = (uint8_t) (server.arg("weatherCityShow").toInt() ? 1 : 0);
     settings.weatherInterval = (uint16_t) constrain(server.arg("weatherInterval").toInt(), 1, 240);
-    settings.weatherSpeed = (uint8_t) constrain(server.arg("weatherSpeed").toInt(), 1, 4);
+    settings.weatherSpeed = (uint8_t) constrain(server.arg("weatherSpeed").toInt(), 1, 3);
     settings.weatherDetails = (uint8_t) (server.arg("weatherDetails").toInt() ? 1 : 0);
     settings.detailFormat = 0xDE7A;
     settings.rainWarn = (uint8_t) (server.arg("rainWarn").toInt() ? 1 : 0);
@@ -2961,6 +2979,21 @@ void char2Arr(unsigned short ch, int PosX, short PosY) { //characters into arr
     }
 }
 
+// Dither the already-drawn message towards transparent: level 0 = hidden, 16 = fully shown.
+void fadeMessage(uint8_t level)
+{
+    static const uint8_t bayer[4][4] = {
+        { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 }
+    };
+    if (level >= 16) return;
+    for (uint8_t x = 0; x <= maxPosX; x++) {
+        for (uint8_t y = 0; y < 8; y++) {
+            if (bayer[y & 3][x & 3] >= level)
+                LEDarr[x >> 3][y] &= ~(1 << (x & 7));
+        }
+    }
+}
+
 //***********************************Digit Change Animations*********************************************************
 enum {
     DIGIT_ANIM_OFF = 0,
@@ -3203,6 +3236,51 @@ void setLedPixel(int x, int y)
 {
     if (x < 0 || x > (int) maxPosX || y < 0 || y > 7) return;
     LEDarr[x >> 3][y] |= (1 << (x & 7));
+}
+
+void startPacmanAnimation()
+{
+    pacmanActive = true;
+    pacmanFrame = 0;
+    pacmanRuns++;
+    showMsg = false;
+    max7219_set_brightness(settings.brightness);
+    z_PosX = maxPosX;
+    d_PosX = -8;
+    clearLEDarr();
+}
+
+void drawPacmanAnimation()   // 2 s: Pac-Man crosses the display eating the dots
+{
+    static const uint8_t pacOpen[8] = {
+        0b00111100, 0b01111110, 0b11111100, 0b11111000,
+        0b11111000, 0b11111100, 0b01111110, 0b00111100
+    };
+    static const uint8_t pacClosed[8] = {
+        0b00111100, 0b01111110, 0b11111111, 0b11111111,
+        0b11111111, 0b11111111, 0b01111110, 0b00111100
+    };
+    int x = -8 + (int) pacmanFrame;
+    const uint8_t* sprite = ((pacmanFrame / 4) & 1) ? pacOpen : pacClosed;
+
+    for (int dotX = 6; dotX <= 30; dotX += 6)   // dots disappear as Pac-Man reaches them
+        if (x + 7 < dotX)
+            setLedPixel(dotX, 4);
+
+    for (uint8_t row = 0; row < 8; row++) {
+        uint8_t bits = sprite[row];
+        for (uint8_t col = 0; col < 8; col++)
+            if (bits & (0x80 >> col))
+                setLedPixel(x + col, row);
+    }
+
+    pacmanFrame++;
+    if (pacmanFrame > 40)   // sprite is completely off the right edge
+    {
+        pacmanActive = false;
+        if (msgQueueCount > 0)
+            startNextQueuedMsg();
+    }
 }
 
 void drawAlertAnimation(uint8_t type, uint16_t frame)
@@ -3469,6 +3547,7 @@ void startAlertAnimation(uint8_t type, const char* text, uint8_t speed)
 
     // The warning animation has priority over a running clock message/date scroll.
     showMsg = false;
+    pacmanActive = false;
     max7219_set_brightness(settings.brightness);
     msgQueueCount = 0;
     z_PosX = maxPosX;
@@ -4155,19 +4234,28 @@ void loop() {
                     }
                     if (apActive && millis() < apMsgUntil)   // keep repeating the AP setup hint for 30 seconds
                         startMsg(apUpdateMode ? "AP UPDATE 192.168.4.1" : "SETUP MODE AP 192.168.4.1");
+                    else
+                        startPacmanAnimation();
                 }
+            }
+            else if (pacmanActive) {
+                // Pac-Man is advanced in the draw block below; queued messages wait.
             }
             else if (msgQueueCount > 0) {
                 startNextQueuedMsg();
             }
             else if (f_scroll_x == true) {
-                z_PosX++;
-                d_PosX++;
-                if (d_PosX == 101)
-                    z_PosX = 0;
-                if (z_PosX == maxPosX) {
-                    f_scroll_x = false;
-                    d_PosX = -8;
+                uint8_t steps = (settings.dateSpeed < 1 || settings.dateSpeed > 3) ? 2 : settings.dateSpeed;
+                for (uint8_t s = 0; s < steps; s++) {
+                    z_PosX++;
+                    d_PosX++;
+                    if (d_PosX == 101)
+                        z_PosX = 0;
+                    if (z_PosX == maxPosX) {
+                        f_scroll_x = false;
+                        d_PosX = -8;
+                        break;
+                    }
                 }
             }
             if (!showMsg)
@@ -4177,22 +4265,18 @@ void loop() {
                 int mi, mx = d_PosX;
                 digitAnimCancelAll();
                 clearLEDarr();   // erase clock digits + scroll trails so the message scrolls cleanly
-                unsigned long msgElapsed = millis() - msgEffectStartMs;
                 int msgYOff = 0;
                 bool drawMsg = true;
-                if (settings.textEffect == 2 && msgElapsed < 400)
-                    msgYOff = -8 + (int) ((msgElapsed * 8UL) / 400UL);   // slide down in
-                else if (settings.textEffect == 3 && msgElapsed < 400)
-                    msgYOff = 8 - (int) ((msgElapsed * 8UL) / 400UL);    // slide up in
+                int enterPx = d_PosX + 8;   // how far the message has entered from the left
+                if (enterPx < 0) enterPx = 0;
+                if (enterPx > 40) enterPx = 40;
+                uint8_t enterLevel = (uint8_t) ((enterPx * 16) / 40);
+                if (settings.textEffect == 2)
+                    msgYOff = -8 + (int) ((enterPx * 8) / 40);   // slide down in
+                else if (settings.textEffect == 3)
+                    msgYOff = 8 - (int) ((enterPx * 8) / 40);    // slide up in
                 else if (settings.textEffect == 4)
-                    drawMsg = ((millis() / 250UL) & 1UL) == 0;           // blink
-                if (settings.textEffect == 1)   // fade in
-                {
-                    uint8_t br = settings.brightness;
-                    if (msgElapsed < 500)
-                        br = (uint8_t) (((uint16_t) settings.brightness * msgElapsed) / 500UL);
-                    max7219_set_brightness(br);
-                }
+                    drawMsg = ((millis() / 250UL) & 1UL) == 0;   // blink
                 if (drawMsg)
                 {
                     for (mi = 0; msg[mi] != 0; mi++) {
@@ -4202,6 +4286,11 @@ void loop() {
                         mx -= (k >= 0 && k < 96) ? font1[k][0] : 4;   // step by the actual glyph width; non-ASCII bytes use a space width
                     }
                 }
+                if (settings.textEffect == 1 && enterLevel < 16)
+                    fadeMessage(enterLevel);   // dither fade-in; works even at brightness 0
+            }
+            else if (pacmanActive) {
+                drawPacmanAnimation();
             }
             else {
                 if (f_scroll_x)
