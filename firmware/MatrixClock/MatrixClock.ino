@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.4.2"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.4.3"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -261,6 +261,8 @@ int weatherDailyProb = 0;
 char weatherSunrise[6] = "";
 char weatherSunset[6] = "";
 bool weatherDetailsValid = false;
+bool weatherHighValid = false;
+bool weatherLowValid = false;
 uint16_t weatherDetailCount = 0;
 uint8_t weatherDetailLastPage = 0;
 bool f_tckr1s = false;
@@ -1246,7 +1248,7 @@ void handleWeatherPage()
             "table{width:100%;border-collapse:collapse;background:linear-gradient(180deg,#171c19,#121614);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,.18)}"
             "td{padding:12px 14px;border-bottom:1px solid var(--line);font-size:14px}tr:last-child td{border-bottom:none}"
             "td:first-child{color:var(--sub)}td:last-child{text-align:right;font-weight:600}"
-            ".yes{color:var(--accent)}.no{color:var(--sub)}.big{font-size:16px}"
+            ".yes{color:var(--accent)}.no{color:var(--sub)}.warn{color:#e05252}.ok{color:var(--accent)}.big{font-size:16px}"
             ".note{font-size:12px;line-height:1.6;color:var(--sub);margin:16px 0}.note a{color:var(--accent);text-decoration:none}"
             "</style></head><body><div class=wrap><h1>Rain / Weather</h1><div class=city>";
     page += settings.weatherCity[0] ? settings.weatherCity : "No weather city configured";
@@ -1275,15 +1277,15 @@ void handleWeatherPage()
         page += weatherRainCodeSoon ? "Yes" : "No";
         page += "</td></tr><tr><td>Next 2h peak</td><td>";
         page += String(weatherRainPeak, 1);
-        page += " mm/h</td></tr><tr><td>Today high / low</td><td>";
-        page += String(weatherHighC, 1);
+        page += " mm/h</td></tr><tr><td>Today high / low temp.</td><td>";
+        page += weatherHighValid ? String(weatherHighC, 1) : "--";
         page += " / ";
-        page += String(weatherLowC, 1);
+        page += weatherLowValid ? String(weatherLowC, 1) : "--";
         page += " &deg;C</td></tr><tr><td>Sunrise / sunset</td><td>";
         page += weatherSunrise[0] ? weatherSunrise : "--:--";
         page += " / ";
         page += weatherSunset[0] ? weatherSunset : "--:--";
-        page += "</td></tr><tr><td>Wind / UV</td><td>";
+        page += "</td></tr><tr><td>Wind / UV index</td><td>";
         page += String(weatherWindKmh, 0);
         page += " km/h ";
         page += windDirName(weatherWindDir);
@@ -1298,8 +1300,8 @@ void handleWeatherPage()
         page += " mm/h</td></tr><tr><td>Rain warning</td><td class=";
         if (!settings.rainWarn) page += "no>Off";
         else if (!fresh) page += "no>Unknown (stale data)";
-        else if (warning) page += "yes>ACTIVE";
-        else page += "no>Not triggered";
+        else if (warning) page += "warn>ACTIVE";
+        else page += "yes>Not triggered";
         page += "</td></tr><tr><td>Temperature</td><td>";
         page += String(weatherTempC, 1);
         page += " &deg;C</td></tr><tr><td>Humidity</td><td>";
@@ -1896,6 +1898,19 @@ void jsonFirstTimeAfter(const String& s, const char* key, char* out, size_t outS
     out[5] = 0;
 }
 
+bool jsonFirstNumber(const String& s, const char* key, double& out)
+{
+    int p = s.indexOf(key);
+    if (p < 0) return false;
+    p += (int) strlen(key);
+    while (p < (int) s.length() && (s[p] == ' ' || s[p] == ',')) p++;
+    if (p >= (int) s.length()) return false;
+    if (s[p] == ']') return false;
+    if (strncmp(s.c_str() + p, "null", 4) == 0) return false;
+    out = atof(s.c_str() + p);
+    return true;
+}
+
 const char* windDirName(int deg)
 {
     static const char* dirs[] = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" };
@@ -1909,23 +1924,30 @@ void buildWeatherDetail(char* out, size_t outSize, uint8_t page)
     switch (page)
     {
         case 0:
-            snprintf(out, outSize, "TODAY HIGH %.1f ~C  LOW %.1f ~C", weatherHighC, weatherLowC);
+        {
+            char hi[16], lo[16];
+            if (weatherHighValid) snprintf(hi, sizeof hi, "%.1f ~C", weatherHighC);
+            else strcpy(hi, "--");
+            if (weatherLowValid) snprintf(lo, sizeof lo, "%.1f ~C", weatherLowC);
+            else strcpy(lo, "--");
+            snprintf(out, outSize, "TODAY HIGH TEMP. %s  LOW TEMP. %s", hi, lo);
             break;
+        }
         case 1:
             snprintf(out, outSize, "SUNRISE %s  SUNSET %s",
                      weatherSunrise[0] ? weatherSunrise : "--:--",
                      weatherSunset[0] ? weatherSunset : "--:--");
             break;
         case 2:
-            snprintf(out, outSize, "WIND %.0f KM/H %s  UV %.0f",
+            snprintf(out, outSize, "WIND %.0f KM/H %s  UV INDEX %.0f",
                      weatherWindKmh, windDirName(weatherWindDir), weatherUv);
             break;
         case 3:
-            snprintf(out, outSize, "PRESSURE %.0f HPA  TODAY RAIN %d%%",
+            snprintf(out, outSize, "PRESSURE %.0f HPA  TODAY RAIN CHANCE %d%%",
                      weatherPressureHpa, weatherDailyProb);
             break;
         default:
-            snprintf(out, outSize, "RAIN 1H %.1f MM  2H %.1f MM  CHANCE %d%%",
+            snprintf(out, outSize, "RAIN 1H %.1f MM  2H %.1f MM  RAIN CHANCE %d%%",
                      weatherRain1h, weatherRain2h, weatherPrecipProb);
             break;
     }
@@ -1994,7 +2016,10 @@ bool fetchWeather(double& temp, int& hum, double& precip, double& rainNext, int&
         if (isRainCode((int) codes[i])) codeRainSoon = true;
 
     double dv[1];
-    weatherDetailsValid = false;
+    double highValue = 0;
+    double lowValue = 0;
+    weatherHighValid = false;
+    weatherLowValid = false;
     weatherHighC = 0;
     weatherLowC = 0;
     weatherUv = 0;
@@ -2002,13 +2027,17 @@ bool fetchWeather(double& temp, int& hum, double& precip, double& rainNext, int&
     weatherWindDir = 0;
     weatherDailyProb = 0;
     weatherPressureHpa = (float) jsonDoubleAfter(resp, "\"pressure_msl\":");
-    if (parseJsonNumberArray(resp, "\"temperature_2m_max\":[", dv, 1) > 0)
+    if (jsonFirstNumber(resp, "\"temperature_2m_max\":[", highValue))
     {
-        weatherHighC = (float) dv[0];
-        weatherDetailsValid = true;
+        weatherHighC = (float) highValue;
+        weatherHighValid = true;
     }
-    if (parseJsonNumberArray(resp, "\"temperature_2m_min\":[", dv, 1) > 0)
-        weatherLowC = (float) dv[0];
+    if (jsonFirstNumber(resp, "\"temperature_2m_min\":[", lowValue))
+    {
+        weatherLowC = (float) lowValue;
+        weatherLowValid = true;
+    }
+    weatherDetailsValid = weatherHighValid && weatherLowValid;
     if (parseJsonNumberArray(resp, "\"uv_index_max\":[", dv, 1) > 0)
         weatherUv = (float) dv[0];
     if (parseJsonNumberArray(resp, "\"wind_speed_10m_max\":[", dv, 1) > 0)
