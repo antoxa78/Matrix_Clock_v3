@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.3.10"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.3.11"   // shown on the settings page
 
 // Rain warning tuning. The current rain rate uses settings.rainThresh10;
 // these values control the forecast-based part of the warning.
@@ -107,9 +107,11 @@ struct ClockSettings {
     uint16_t textFxFormat;   // 0xEFF4 when the textEffect field is valid
     uint8_t dateSpeed;       // date scroll speed: 1=slow, 2=normal, 3=fast
     uint16_t dateSpeedFormat; // 0xDA7E when the dateSpeed field is valid
+    uint8_t displayTransition; // 0=off, 1=Pac-Man eats the old display on a message transition
+    uint16_t transitionFormat; // 0xD157 when the displayTransition field is valid
 };
-ClockSettings settings = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF4, 2, 0xDA7E };
-const ClockSettings settings_defaults = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF4, 2, 0xDA7E };
+ClockSettings settings = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF4, 2, 0xDA7E, 1, 0xD157 };
+const ClockSettings settings_defaults = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF4, 2, 0xDA7E, 1, 0xD157 };
 bool rtcInitialized = false;
 bool apActive = false;              // AP fallback mode active (settings page accessible)
 bool apShutdownPending = false;     // stopAP ran; softAP shutdown deferred to a quieter moment
@@ -130,6 +132,10 @@ uint8_t msgStep = 2;                                 // current message scroll s
 bool pacmanActive = false;                            // Pac-Man runs after a message finishes
 uint8_t pacmanFrame = 0;
 uint16_t pacmanRuns = 0;
+bool msgEatActive = false;                             // Pac-Man is eating the previous display
+bool msgEatPending = false;                            // a message waits for the eat transition to finish
+uint8_t msgEatFrame = 0;
+uint16_t msgEatSnapshot[anzMAX][8];                    // previous display frame
 #define MSG_QUEUE_SIZE 3
 char msgQueue[MSG_QUEUE_SIZE][120];
 uint8_t msgQueueStep[MSG_QUEUE_SIZE];
@@ -752,6 +758,13 @@ void settings_load()
         repaired = true;
     }
     if (settings.dateSpeed < 1 || settings.dateSpeed > 3) { settings.dateSpeed = 2; repaired = true; }
+    if (settings.transitionFormat != 0xD157)
+    {
+        settings.displayTransition = 1;
+        settings.transitionFormat = 0xD157;
+        repaired = true;
+    }
+    if (settings.displayTransition > 1) { settings.displayTransition = 1; repaired = true; }
     if (settings.holidayFreq != 0 && settings.holidayFreq != 15 && settings.holidayFreq != 30
         && settings.holidayFreq != 60 && settings.holidayFreq != 120 && settings.holidayFreq != 240)
     { settings.holidayFreq = 0; repaired = true; }
@@ -845,6 +858,8 @@ bool webAuthOk()   // optional HTTP Basic auth: enabled only when a web password
 //**************************************************************************************************
 void startMsg(const char* text, uint8_t step = 2);   // forward decl, defined below
 void max7219_set_brightness(unsigned short br);
+void startMsgEatTransition(bool pending);
+bool displayHasPixels();
 void rtc_clearOsf();
 float rtc_temp();
 bool rtc_osf();
@@ -912,8 +927,11 @@ void startMsgNow(const char* text, uint8_t step)
     strncpy(msg, text, sizeof(msg) - 1);
     msg[sizeof(msg) - 1] = 0;
     msgStep = step;
-    showMsg = true;
     pacmanActive = false;
+    if (settings.displayTransition == 1 && displayHasPixels())
+        startMsgEatTransition(true);
+    else
+        showMsg = true;
     max7219_set_brightness(settings.brightness);
     z_PosX = 0;
     d_PosX = -8;
@@ -940,7 +958,7 @@ void startNextQueuedMsg()
 
 void startMsg(const char* text, uint8_t step)   // scroll a message; queue up to 3 so weather/Shabbat are not lost
 {
-    if (!showMsg && msgQueueCount == 0)
+    if (!showMsg && msgQueueCount == 0 && !msgEatActive)
     {
         startMsgNow(text, step);
         return;
@@ -1105,6 +1123,7 @@ void handleValues()
     j += "[\"Colon Animation\",\"colonAnim\",[[\"0\",\"Solid\"],[\"1\",\"Blink\"],[\"2\",\"Slow\"],[\"3\",\"Dbl\"],[\"4\",\"Alt\"],[\"5\",\"Center Out\"]],\"" + String(settings.colonAnim) + "\"],";
     j += "[\"Digit Animation\",\"digitAnim\",[[\"0\",\"Off\"],[\"1\",\"Roll\"],[\"2\",\"Flip\"],[\"3\",\"Wipe\"],[\"4\",\"Fade\"],[\"5\",\"Drop\"]],\"" + String(settings.digitAnim) + "\"],";
     j += "[\"Message Effect\",\"textEffect\",[[\"0\",\"Scroll\"],[\"1\",\"Fade\"],[\"2\",\"Slide Down\"],[\"3\",\"Slide Up\"],[\"4\",\"Blink\"]],\"" + String(settings.textEffect) + "\"],";
+    j += "[\"Display Transition\",\"displayTransition\",[[\"0\",\"Off\"],[\"1\",\"Pac-Man\"]],\"" + String(settings.displayTransition) + "\"],";
     j += "[\"NTP Resync\",\"resync\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.resync) + "\"],";
     j += "[\"Resync Hour\",\"resyncHour\",null,\"" + String(settings.resyncHour) + "\"],";
     j += "[\"Resync Minute\",\"resyncMin\",null,\"" + String(settings.resyncMin) + "\"],";
@@ -1377,6 +1396,8 @@ void handleReset()
     settings.textFxFormat = 0xEFF4;
     settings.dateSpeed = 2;
     settings.dateSpeedFormat = 0xDA7E;
+    settings.displayTransition = 1;
+    settings.transitionFormat = 0xD157;
     settings_save();
     Serial.printf("Settings reset: NTP=%s rain=%d/%smm heat=%d/%sC\r\n",
                   settings.ntpServer, settings.rainWarn, tenthsStr(settings.rainThresh10).c_str(),
@@ -1384,6 +1405,15 @@ void handleReset()
     server.keepAlive(false);
     server.send(200, "application/json", "{\"ok\":true,\"msg\":\"Settings reset. Rebooting...\"}");
     otaRebootAt = millis() + 2000UL;
+}
+//**************************************************************************************************
+void handleTestAnimation()
+{
+    if (!webAuthOk()) { server.requestAuthentication(); return; }
+    if (!msgEatActive)
+        startMsgEatTransition(false);
+    server.keepAlive(false);
+    server.send(200, "application/json", "{\"ok\":true}");
 }
 //**************************************************************************************************
 void handleSave()
@@ -1423,6 +1453,8 @@ void handleSave()
     if (server.hasArg("digitAnim")) settings.digitAnim = (uint8_t) constrain(server.arg("digitAnim").toInt(), 0, 5);
     if (server.hasArg("textEffect")) settings.textEffect = (uint8_t) constrain(server.arg("textEffect").toInt(), 0, 4);
     settings.textFxFormat = 0xEFF4;
+    if (server.hasArg("displayTransition")) settings.displayTransition = (uint8_t) (server.arg("displayTransition").toInt() ? 1 : 0);
+    settings.transitionFormat = 0xD157;
     settings.marquee = 0;   // removed from settings menu, keep disabled
     settings.pulse = 0;
     settings.resync = (uint8_t) (server.arg("resync").toInt() ? 1 : 0);
@@ -3238,6 +3270,70 @@ void setLedPixel(int x, int y)
     LEDarr[x >> 3][y] |= (1 << (x & 7));
 }
 
+static const uint8_t pacOpen[8] = {
+    0b00111100, 0b01111110, 0b11111100, 0b11111000,
+    0b11111000, 0b11111100, 0b01111110, 0b00111100
+};
+static const uint8_t pacClosed[8] = {
+    0b00111100, 0b01111110, 0b11111111, 0b11111111,
+    0b11111111, 0b11111111, 0b01111110, 0b00111100
+};
+
+void drawPacmanSprite(int x, uint8_t frame)
+{
+    const uint8_t* sprite = ((frame / 4) & 1) ? pacOpen : pacClosed;
+    for (uint8_t row = 0; row < 8; row++) {
+        uint8_t bits = sprite[row];
+        for (uint8_t col = 0; col < 8; col++)
+            if (bits & (0x80 >> col))
+                setLedPixel(x + col, row);
+    }
+}
+
+bool displayHasPixels()
+{
+    for (uint8_t m = 0; m < anzMAX; m++)
+        for (uint8_t y = 0; y < 8; y++)
+            if (LEDarr[m][y])
+                return true;
+    return false;
+}
+
+void startMsgEatTransition(bool pending)
+{
+    memcpy(msgEatSnapshot, LEDarr, sizeof(msgEatSnapshot));
+    msgEatActive = true;
+    msgEatPending = pending;
+    msgEatFrame = 0;
+    pacmanActive = false;
+    if (pending)
+        showMsg = false;
+}
+
+void drawMsgEatAnimation()   // Pac-Man eats the previous display frame
+{
+    int x = -8 + (int) msgEatFrame;
+    for (uint8_t c = 0; c <= maxPosX; c++) {
+        if ((int) c <= x + 7)
+            continue;   // already eaten or currently under Pac-Man
+        uint8_t module = c >> 3;
+        uint8_t bit = 1 << (c & 7);
+        for (uint8_t y = 0; y < 8; y++)
+            if (msgEatSnapshot[module][y] & bit)
+                setLedPixel(c, y);
+    }
+    drawPacmanSprite(x, msgEatFrame);
+
+    msgEatFrame++;
+    if (msgEatFrame > 40) {
+        msgEatActive = false;
+        if (msgEatPending) {
+            msgEatPending = false;
+            showMsg = true;
+        }
+    }
+}
+
 void startPacmanAnimation()
 {
     pacmanActive = true;
@@ -3252,27 +3348,13 @@ void startPacmanAnimation()
 
 void drawPacmanAnimation()   // 2 s: Pac-Man crosses the display eating the dots
 {
-    static const uint8_t pacOpen[8] = {
-        0b00111100, 0b01111110, 0b11111100, 0b11111000,
-        0b11111000, 0b11111100, 0b01111110, 0b00111100
-    };
-    static const uint8_t pacClosed[8] = {
-        0b00111100, 0b01111110, 0b11111111, 0b11111111,
-        0b11111111, 0b11111111, 0b01111110, 0b00111100
-    };
     int x = -8 + (int) pacmanFrame;
-    const uint8_t* sprite = ((pacmanFrame / 4) & 1) ? pacOpen : pacClosed;
 
     for (int dotX = 6; dotX <= 30; dotX += 6)   // dots disappear as Pac-Man reaches them
         if (x + 7 < dotX)
             setLedPixel(dotX, 4);
 
-    for (uint8_t row = 0; row < 8; row++) {
-        uint8_t bits = sprite[row];
-        for (uint8_t col = 0; col < 8; col++)
-            if (bits & (0x80 >> col))
-                setLedPixel(x + col, row);
-    }
+    drawPacmanSprite(x, pacmanFrame);
 
     pacmanFrame++;
     if (pacmanFrame > 40)   // sprite is completely off the right edge
@@ -3548,6 +3630,8 @@ void startAlertAnimation(uint8_t type, const char* text, uint8_t speed)
     // The warning animation has priority over a running clock message/date scroll.
     showMsg = false;
     pacmanActive = false;
+    msgEatActive = false;
+    msgEatPending = false;
     max7219_set_brightness(settings.brightness);
     msgQueueCount = 0;
     z_PosX = maxPosX;
@@ -3672,6 +3756,7 @@ void setup() {
     server.on("/weather", HTTP_GET, handleWeatherPage);   // last rain/weather values vs threshold
     server.on("/scan", HTTP_GET, handleScan);       // WiFi network scan for the settings page
     server.on("/reset", HTTP_POST, handleReset);    // restore factory defaults
+    server.on("/testanim", HTTP_POST, handleTestAnimation);   // preview the display-change animation
     server.on("/save", HTTP_POST, handleSave);   // POST only: a later GET/refresh on /save must NOT re-run the save
     server.on("/update", HTTP_GET, handleUpdatePage);
     server.on("/update", HTTP_POST, handleUpdateDone, handleUpdateUpload);
@@ -4169,6 +4254,13 @@ void loop() {
             f_tckr50ms = false;
             if (Update.isRunning() && otaRebootAt == 0)
                 continue;   // keep the display/SPI quiet while firmware is being written
+            if (msgEatActive)   // Pac-Man is eating the previous display frame
+            {
+                clearLEDarr();
+                drawMsgEatAnimation();
+                refresh_display();
+                continue;
+            }
             if (alertAnimActive)   // show the rain/heat icon first, then scroll the warning text
             {
                 unsigned long elapsed = millis() - alertAnimStartMs;
@@ -4288,6 +4380,9 @@ void loop() {
                 }
                 if (settings.textEffect == 1 && enterLevel < 16)
                     fadeMessage(enterLevel);   // dither fade-in; works even at brightness 0
+            }
+            else if (msgEatActive) {
+                drawMsgEatAnimation();
             }
             else if (pacmanActive) {
                 drawPacmanAnimation();
