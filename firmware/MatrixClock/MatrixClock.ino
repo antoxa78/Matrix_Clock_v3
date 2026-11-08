@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.4.3"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.4.4"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -1285,7 +1285,7 @@ void handleWeatherPage()
         page += weatherSunrise[0] ? weatherSunrise : "--:--";
         page += " / ";
         page += weatherSunset[0] ? weatherSunset : "--:--";
-        page += "</td></tr><tr><td>Wind / UV index</td><td>";
+        page += "</td></tr><tr><td>Max wind / UV index</td><td>";
         page += String(weatherWindKmh, 0);
         page += " km/h ";
         page += windDirName(weatherWindDir);
@@ -1939,7 +1939,7 @@ void buildWeatherDetail(char* out, size_t outSize, uint8_t page)
                      weatherSunset[0] ? weatherSunset : "--:--");
             break;
         case 2:
-            snprintf(out, outSize, "WIND %.0f KM/H %s  UV INDEX %.0f",
+            snprintf(out, outSize, "MAX WIND %.0f KM/H %s  UV INDEX %.0f",
                      weatherWindKmh, windDirName(weatherWindDir), weatherUv);
             break;
         case 3:
@@ -1977,7 +1977,7 @@ bool fetchWeather(double& temp, int& hum, double& precip, double& rainNext, int&
                + "&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,pressure_msl"
                + "&minutely_15=precipitation,precipitation_probability,weather_code&forecast_minutely_15=8"
                + "&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset,uv_index_max,wind_speed_10m_max,wind_direction_10m_dominant,precipitation_probability_max"
-               + "&timezone=auto";
+               + "&timezone=auto&wind_speed_unit=kmh";
     String resp;
     if (!httpGet(url, resp)) { Serial.println("Weather: forecast request failed"); return false; }
     temp = jsonDoubleAfter(resp, "\"temperature_2m\":");
