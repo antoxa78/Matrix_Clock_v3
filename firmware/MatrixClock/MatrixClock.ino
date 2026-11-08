@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.3.5"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.3.7"   // shown on the settings page
 
 // Rain warning tuning. The current rain rate uses settings.rainThresh10;
 // these values control the forecast-based part of the warning.
@@ -2957,9 +2957,9 @@ void drawColon(int baseX)   // separator; baseX is the same position char2Arr(':
         for (uint8_t y = 0; y < 8; y++) dot |= rows[y];
         memset(rows, 0, sizeof(rows));
         unsigned long phase = millis() % 1200UL;
-        uint8_t off = (phase < 800UL) ? (uint8_t) ((phase * 4UL) / 800UL) : 4;
-        int top = 3 - (int) off;
-        int bottom = 4 + (int) off;
+        uint8_t off = (phase < 800UL) ? (uint8_t) ((phase * 3UL) / 800UL) : 3;
+        int top = 2 - (int) off;
+        int bottom = 3 + (int) off;
         if (top < 0) top = 0;
         if (bottom > 5) bottom = 5;
         rows[top] = dot;
@@ -3611,28 +3611,28 @@ void loop() {
                             // Hysteresis: keep the warning for one dry check, but say
                             // clearly that the rain has stopped.
                             if (settings.weatherCityShow)
-                                snprintf(buf, sizeof buf, "RAIN ENDING  LAST: %.1f MM/h,  1H: %.1f MM/h,  CHANCE %d%%,  %s  Temp: %.1f C, RH: %d %%  ",
+                                snprintf(buf, sizeof buf, "RAIN ENDING  LAST: %.1f MM/h,  1H: %.1f MM/h,  CHANCE %d%%,  %s  Temp: %.1f ~C, RH: %d %%  ",
                                          weatherRainLastRate, weatherRainLast1h, weatherRainLastProb, settings.weatherCity, temp, hum);
                             else
-                                snprintf(buf, sizeof buf, "RAIN ENDING  LAST: %.1f MM/h,  1H: %.1f MM/h,  CHANCE %d%%,  Temp: %.1f C, RH: %d %%  ",
+                                snprintf(buf, sizeof buf, "RAIN ENDING  LAST: %.1f MM/h,  1H: %.1f MM/h,  CHANCE %d%%,  Temp: %.1f ~C, RH: %d %%  ",
                                          weatherRainLastRate, weatherRainLast1h, weatherRainLastProb, temp, hum);
                         }
                         else if (rainNow || rainCodeNow)
                         {
                             if (settings.weatherCityShow)
-                                snprintf(buf, sizeof buf, "RAIN WARNING !!!  NOW: %.1f MM/h,  1H: %.1f MM/h,  2H: %.1f MM/h,  CHANCE %d%%,  %s  Temp: %.1f C, RH: %d %%  ",
+                                snprintf(buf, sizeof buf, "RAIN WARNING !!!  NOW: %.1f MM/h,  1H: %.1f MM/h,  2H: %.1f MM/h,  CHANCE %d%%,  %s  Temp: %.1f ~C, RH: %d %%  ",
                                          precip, rain1h, rain2h, prob2h, settings.weatherCity, temp, hum);
                             else
-                                snprintf(buf, sizeof buf, "RAIN WARNING !!!  NOW: %.1f MM/h,  1H: %.1f MM/h,  2H: %.1f MM/h,  CHANCE %d%%,  Temp: %.1f C, RH: %d %%  ",
+                                snprintf(buf, sizeof buf, "RAIN WARNING !!!  NOW: %.1f MM/h,  1H: %.1f MM/h,  2H: %.1f MM/h,  CHANCE %d%%,  Temp: %.1f ~C, RH: %d %%  ",
                                          precip, rain1h, rain2h, prob2h, temp, hum);
                         }
                         else
                         {
                             if (settings.weatherCityShow)
-                                snprintf(buf, sizeof buf, "RAIN LIKELY  1H: %.1f MM/h,  2H: %.1f MM/h,  CHANCE %d%%,  %s  Temp: %.1f C, RH: %d %%  ",
+                                snprintf(buf, sizeof buf, "RAIN LIKELY  1H: %.1f MM/h,  2H: %.1f MM/h,  CHANCE %d%%,  %s  Temp: %.1f ~C, RH: %d %%  ",
                                          rain1h, rain2h, prob2h, settings.weatherCity, temp, hum);
                             else
-                                snprintf(buf, sizeof buf, "RAIN LIKELY  1H: %.1f MM/h,  2H: %.1f MM/h,  CHANCE %d%%,  Temp: %.1f C, RH: %d %%  ",
+                                snprintf(buf, sizeof buf, "RAIN LIKELY  1H: %.1f MM/h,  2H: %.1f MM/h,  CHANCE %d%%,  Temp: %.1f ~C, RH: %d %%  ",
                                          rain1h, rain2h, prob2h, temp, hum);
                         }
                     }
@@ -3640,9 +3640,9 @@ void loop() {
                     {
                         alertType = ALERT_ANIM_HEAT;
                         if (settings.weatherCityShow)
-                            snprintf(buf, sizeof buf, "HEAT WARNING: %.1fC %s Outside Temp: %.1fC, Humidity: %d%%", heatLimit, settings.weatherCity, temp, hum);
+                            snprintf(buf, sizeof buf, "HEAT WARNING: %.1f ~C  %s  Outside Temp: %.1f ~C  RH: %d %%", heatLimit, settings.weatherCity, temp, hum);
                         else
-                            snprintf(buf, sizeof buf, "HEAT WARNING: %.1fC Outside Temp: %.1fC, Humidity: %d%%", heatLimit, temp, hum);
+                            snprintf(buf, sizeof buf, "HEAT WARNING: %.1f ~C  Outside Temp: %.1f ~C  RH: %d %%", heatLimit, temp, hum);
                     }
                     else if (settings.weather)
                     {
