@@ -32,7 +32,24 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.3.11"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.4.0"   // shown on the settings page
+
+// Display-change transition animations.
+enum {
+    TRANSITION_OFF = 0,
+    TRANSITION_PACMAN,
+    TRANSITION_WIPE,
+    TRANSITION_DISSOLVE,
+    TRANSITION_BLINDS,
+    TRANSITION_CHECKER,
+    TRANSITION_MELT,
+    TRANSITION_MATRIX,
+    TRANSITION_SLIDE,
+    TRANSITION_SPARKLE,
+    TRANSITION_SNAKE,
+    TRANSITION_BARN,
+    TRANSITION_RANDOM
+};
 
 // Rain warning tuning. The current rain rate uses settings.rainThresh10;
 // these values control the forecast-based part of the warning.
@@ -107,7 +124,7 @@ struct ClockSettings {
     uint16_t textFxFormat;   // 0xEFF4 when the textEffect field is valid
     uint8_t dateSpeed;       // date scroll speed: 1=slow, 2=normal, 3=fast
     uint16_t dateSpeedFormat; // 0xDA7E when the dateSpeed field is valid
-    uint8_t displayTransition; // 0=off, 1=Pac-Man eats the old display on a message transition
+    uint8_t displayTransition; // 0=off, 1=Pac-Man, 2..11 animations, 12=random order
     uint16_t transitionFormat; // 0xD157 when the displayTransition field is valid
 };
 ClockSettings settings = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF4, 2, 0xDA7E, 1, 0xD157 };
@@ -132,10 +149,18 @@ uint8_t msgStep = 2;                                 // current message scroll s
 bool pacmanActive = false;                            // Pac-Man runs after a message finishes
 uint8_t pacmanFrame = 0;
 uint16_t pacmanRuns = 0;
-bool msgEatActive = false;                             // Pac-Man is eating the previous display
-bool msgEatPending = false;                            // a message waits for the eat transition to finish
+bool msgEatActive = false;                             // a display-change transition is running
+bool msgEatPending = false;                            // a message waits for the transition to finish
 uint8_t msgEatFrame = 0;
 uint16_t msgEatSnapshot[anzMAX][8];                    // previous display frame
+uint8_t transitionType = TRANSITION_PACMAN;
+uint8_t transitionSeed = 0;
+uint8_t transitionDir = 0;
+uint8_t transitionBag[TRANSITION_BARN];
+uint8_t transitionBagPos = 0;
+uint8_t transitionBagCount = 0;
+uint8_t lastRandomType = 0;
+uint32_t rngState = 0x9E3779B9UL;
 #define MSG_QUEUE_SIZE 3
 char msgQueue[MSG_QUEUE_SIZE][120];
 uint8_t msgQueueStep[MSG_QUEUE_SIZE];
@@ -760,11 +785,11 @@ void settings_load()
     if (settings.dateSpeed < 1 || settings.dateSpeed > 3) { settings.dateSpeed = 2; repaired = true; }
     if (settings.transitionFormat != 0xD157)
     {
-        settings.displayTransition = 1;
+        settings.displayTransition = TRANSITION_PACMAN;
         settings.transitionFormat = 0xD157;
         repaired = true;
     }
-    if (settings.displayTransition > 1) { settings.displayTransition = 1; repaired = true; }
+    if (settings.displayTransition > TRANSITION_RANDOM) { settings.displayTransition = TRANSITION_PACMAN; repaired = true; }
     if (settings.holidayFreq != 0 && settings.holidayFreq != 15 && settings.holidayFreq != 30
         && settings.holidayFreq != 60 && settings.holidayFreq != 120 && settings.holidayFreq != 240)
     { settings.holidayFreq = 0; repaired = true; }
@@ -928,7 +953,7 @@ void startMsgNow(const char* text, uint8_t step)
     msg[sizeof(msg) - 1] = 0;
     msgStep = step;
     pacmanActive = false;
-    if (settings.displayTransition == 1 && displayHasPixels())
+    if (settings.displayTransition != TRANSITION_OFF && displayHasPixels())
         startMsgEatTransition(true);
     else
         showMsg = true;
@@ -1123,7 +1148,7 @@ void handleValues()
     j += "[\"Colon Animation\",\"colonAnim\",[[\"0\",\"Solid\"],[\"1\",\"Blink\"],[\"2\",\"Slow\"],[\"3\",\"Dbl\"],[\"4\",\"Alt\"],[\"5\",\"Center Out\"]],\"" + String(settings.colonAnim) + "\"],";
     j += "[\"Digit Animation\",\"digitAnim\",[[\"0\",\"Off\"],[\"1\",\"Roll\"],[\"2\",\"Flip\"],[\"3\",\"Wipe\"],[\"4\",\"Fade\"],[\"5\",\"Drop\"]],\"" + String(settings.digitAnim) + "\"],";
     j += "[\"Message Effect\",\"textEffect\",[[\"0\",\"Scroll\"],[\"1\",\"Fade\"],[\"2\",\"Slide Down\"],[\"3\",\"Slide Up\"],[\"4\",\"Blink\"]],\"" + String(settings.textEffect) + "\"],";
-    j += "[\"Display Transition\",\"displayTransition\",[[\"0\",\"Off\"],[\"1\",\"Pac-Man\"]],\"" + String(settings.displayTransition) + "\"],";
+    j += "[\"Display Transition\",\"displayTransition\",[[\"0\",\"Off\"],[\"1\",\"Pac-Man\"],[\"2\",\"Wipe\"],[\"3\",\"Dissolve\"],[\"4\",\"Blinds\"],[\"5\",\"Checkerboard\"],[\"6\",\"Melt\"],[\"7\",\"Matrix Rain\"],[\"8\",\"Slide\"],[\"9\",\"Sparkle\"],[\"10\",\"Snake\"],[\"11\",\"Barn Door\"],[\"12\",\"Random\"]],\"" + String(settings.displayTransition) + "\"],";
     j += "[\"NTP Resync\",\"resync\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.resync) + "\"],";
     j += "[\"Resync Hour\",\"resyncHour\",null,\"" + String(settings.resyncHour) + "\"],";
     j += "[\"Resync Minute\",\"resyncMin\",null,\"" + String(settings.resyncMin) + "\"],";
@@ -1396,7 +1421,7 @@ void handleReset()
     settings.textFxFormat = 0xEFF4;
     settings.dateSpeed = 2;
     settings.dateSpeedFormat = 0xDA7E;
-    settings.displayTransition = 1;
+    settings.displayTransition = TRANSITION_PACMAN;
     settings.transitionFormat = 0xD157;
     settings_save();
     Serial.printf("Settings reset: NTP=%s rain=%d/%smm heat=%d/%sC\r\n",
@@ -1453,7 +1478,7 @@ void handleSave()
     if (server.hasArg("digitAnim")) settings.digitAnim = (uint8_t) constrain(server.arg("digitAnim").toInt(), 0, 5);
     if (server.hasArg("textEffect")) settings.textEffect = (uint8_t) constrain(server.arg("textEffect").toInt(), 0, 4);
     settings.textFxFormat = 0xEFF4;
-    if (server.hasArg("displayTransition")) settings.displayTransition = (uint8_t) (server.arg("displayTransition").toInt() ? 1 : 0);
+    if (server.hasArg("displayTransition")) settings.displayTransition = (uint8_t) constrain(server.arg("displayTransition").toInt(), 0, TRANSITION_RANDOM);
     settings.transitionFormat = 0xD157;
     settings.marquee = 0;   // removed from settings menu, keep disabled
     settings.pulse = 0;
@@ -3299,9 +3324,83 @@ bool displayHasPixels()
     return false;
 }
 
+uint32_t rngNext()
+{
+    rngState = rngState * 1664525UL + 1013904223UL;
+    return rngState;
+}
+
+uint8_t hash8(uint8_t x, uint8_t y, uint8_t seed)
+{
+    uint32_t h = (uint32_t) x * 374761393UL + (uint32_t) y * 668265263UL + (uint32_t) seed * 2246822519UL;
+    h ^= h >> 13;
+    h *= 1274126177UL;
+    h ^= h >> 16;
+    return (uint8_t) h;
+}
+
+bool snapshotPixel(uint8_t x, uint8_t y)
+{
+    return (msgEatSnapshot[x >> 3][y] & (1 << (x & 7))) != 0;
+}
+
+void drawSnapshotColumn(uint8_t x)
+{
+    uint8_t module = x >> 3;
+    uint8_t bit = 1 << (x & 7);
+    for (uint8_t y = 0; y < 8; y++)
+        if (msgEatSnapshot[module][y] & bit)
+            setLedPixel(x, y);
+}
+
+void drawSnapshotRow(uint8_t y)
+{
+    for (uint8_t x = 0; x <= maxPosX; x++)
+        if (snapshotPixel(x, y))
+            setLedPixel(x, y);
+}
+
+uint8_t pickTransitionType()
+{
+    uint8_t type = settings.displayTransition;
+    if (type > TRANSITION_RANDOM)
+        type = TRANSITION_PACMAN;
+    if (type == TRANSITION_RANDOM)
+    {
+        if (transitionBagPos >= transitionBagCount)
+        {
+            for (uint8_t i = 0; i < TRANSITION_BARN; i++)
+                transitionBag[i] = i + 1;
+            for (uint8_t i = TRANSITION_BARN - 1; i > 0; i--)
+            {
+                uint8_t j = (uint8_t) (rngNext() % (i + 1));
+                uint8_t t = transitionBag[i];
+                transitionBag[i] = transitionBag[j];
+                transitionBag[j] = t;
+            }
+            if (lastRandomType && transitionBag[0] == lastRandomType)
+            {
+                uint8_t t = transitionBag[0];
+                transitionBag[0] = transitionBag[1];
+                transitionBag[1] = t;
+            }
+            transitionBagPos = 0;
+            transitionBagCount = TRANSITION_BARN;
+        }
+        type = transitionBag[transitionBagPos++];
+        lastRandomType = type;
+    }
+    else if (type == TRANSITION_OFF)
+        type = TRANSITION_PACMAN;   // test preview when the feature is off
+    return type;
+}
+
 void startMsgEatTransition(bool pending)
 {
     memcpy(msgEatSnapshot, LEDarr, sizeof(msgEatSnapshot));
+    transitionType = pickTransitionType();
+    transitionSeed = (uint8_t) (rngNext() >> 24);
+    transitionDir = (uint8_t) (rngNext() & 3);
     msgEatActive = true;
     msgEatPending = pending;
     msgEatFrame = 0;
@@ -3310,24 +3409,171 @@ void startMsgEatTransition(bool pending)
         showMsg = false;
 }
 
-void drawMsgEatAnimation()   // Pac-Man eats the previous display frame
+void drawMsgEatAnimation()   // play the selected display-change animation
 {
-    int x = -8 + (int) msgEatFrame;
-    for (uint8_t c = 0; c <= maxPosX; c++) {
-        if ((int) c <= x + 7)
-            continue;   // already eaten or currently under Pac-Man
-        uint8_t module = c >> 3;
-        uint8_t bit = 1 << (c & 7);
-        for (uint8_t y = 0; y < 8; y++)
-            if (msgEatSnapshot[module][y] & bit)
-                setLedPixel(c, y);
+    uint8_t f = msgEatFrame;   // 0..40
+    uint16_t progress = (uint16_t) ((f * 256UL) / 40UL);
+
+    switch (transitionType)
+    {
+        case TRANSITION_PACMAN:
+        {
+            int x = -8 + (int) f;
+            for (uint8_t c = 0; c <= maxPosX; c++)
+                if ((int) c > x + 7)
+                    drawSnapshotColumn(c);
+            drawPacmanSprite(x, f);
+            break;
+        }
+        case TRANSITION_WIPE:
+        {
+            if (transitionDir < 2)   // horizontal
+            {
+                int pos = (transitionDir == 0)
+                          ? (int) ((f * 34UL) / 40UL) - 1
+                          : 32 - (int) ((f * 34UL) / 40UL);
+                for (uint8_t x = 0; x <= maxPosX; x++)
+                    if (transitionDir == 0 ? ((int) x > pos) : ((int) x < pos))
+                        drawSnapshotColumn(x);
+                if (pos >= 0 && pos <= (int) maxPosX)
+                    for (uint8_t y = 0; y < 8; y++)
+                        setLedPixel(pos, y);
+            }
+            else                     // vertical
+            {
+                int pos = (transitionDir == 2)
+                          ? (int) ((f * 10UL) / 40UL) - 1
+                          : 8 - (int) ((f * 10UL) / 40UL);
+                for (uint8_t y = 0; y < 8; y++)
+                    if (transitionDir == 2 ? ((int) y > pos) : ((int) y < pos))
+                        drawSnapshotRow(y);
+                if (pos >= 0 && pos <= 7)
+                    for (uint8_t x = 0; x <= maxPosX; x++)
+                        setLedPixel(x, pos);
+            }
+            break;
+        }
+        case TRANSITION_DISSOLVE:
+            for (uint8_t x = 0; x <= maxPosX; x++)
+                for (uint8_t y = 0; y < 8; y++)
+                    if ((uint16_t) hash8(x >> 1, y >> 1, transitionSeed) >= progress
+                        && snapshotPixel(x, y))
+                        setLedPixel(x, y);
+            break;
+        case TRANSITION_BLINDS:
+            for (uint8_t x = 0; x <= maxPosX; x++)
+                for (uint8_t y = 0; y < 8; y++)
+                {
+                    bool visible = (y & 1) ? (f < 40) : (f < 20);
+                    if (visible && snapshotPixel(x, y))
+                        setLedPixel(x, y);
+                }
+            break;
+        case TRANSITION_CHECKER:
+            for (uint8_t x = 0; x <= maxPosX; x++)
+                for (uint8_t y = 0; y < 8; y++)
+                {
+                    bool visible = (((x >> 1) + (y >> 1)) & 1) ? (f < 40) : (f < 20);
+                    if (visible && snapshotPixel(x, y))
+                        setLedPixel(x, y);
+                }
+            break;
+        case TRANSITION_MELT:
+            for (uint8_t x = 0; x <= maxPosX; x++)
+            {
+                uint8_t speed = 1 + ((x * 7 + transitionSeed) % 3);
+                int drop = (int) ((f * (1 + speed)) / 4);
+                for (uint8_t y = 0; y < 8; y++)
+                    if (snapshotPixel(x, y) && (int) y + drop < 8)
+                        setLedPixel(x, y + drop);
+            }
+            break;
+        case TRANSITION_MATRIX:
+            for (uint8_t x = 0; x <= maxPosX; x++)
+            {
+                uint8_t speed = 1 + ((x * 5 + transitionSeed) % 3);
+                int head = (int) ((f * (2 + speed)) / 5);
+                for (uint8_t y = 0; y < 8; y++)
+                    if ((int) y >= head && snapshotPixel(x, y))
+                        setLedPixel(x, y);
+                if (head >= 0 && head < 8)
+                {
+                    setLedPixel(x, head);
+                    if (head + 1 < 8) setLedPixel(x, head + 1);
+                    if (head > 0) setLedPixel(x, head - 1);
+                }
+            }
+            break;
+        case TRANSITION_SLIDE:
+        {
+            int dx = 0, dy = 0;
+            if (transitionDir == 0) dx = -(int) ((f * 34UL) / 40UL);
+            else if (transitionDir == 1) dx = (int) ((f * 34UL) / 40UL);
+            else if (transitionDir == 2) dy = -(int) ((f * 10UL) / 40UL);
+            else dy = (int) ((f * 10UL) / 40UL);
+            for (uint8_t x = 0; x <= maxPosX; x++)
+                for (uint8_t y = 0; y < 8; y++)
+                    if (snapshotPixel(x, y))
+                        setLedPixel((int) x + dx, (int) y + dy);
+            break;
+        }
+        case TRANSITION_SPARKLE:
+            for (uint8_t x = 0; x <= maxPosX; x++)
+                for (uint8_t y = 0; y < 8; y++)
+                    if ((uint16_t) hash8(x, y, transitionSeed) >= progress
+                        && snapshotPixel(x, y))
+                        setLedPixel(x, y);
+            if (f < 40)
+                for (uint8_t i = 0; i < 6; i++)
+                    setLedPixel((uint8_t) (rngNext() % 32), (uint8_t) (rngNext() % 8));
+            break;
+        case TRANSITION_SNAKE:
+        {
+            int step = (int) f * 7;
+            for (uint8_t x = 0; x <= maxPosX; x++)
+                for (uint8_t y = 0; y < 8; y++)
+                {
+                    int row = y;
+                    int col = (row & 1) ? (31 - (int) x) : (int) x;
+                    int idx = row * 32 + col;
+                    if (idx > step && snapshotPixel(x, y))
+                        setLedPixel(x, y);
+                }
+            if (step < 256)
+            {
+                int row = step / 32;
+                int col = step % 32;
+                int headX = (row & 1) ? (31 - col) : col;
+                for (uint8_t dy = 0; dy < 2; dy++)
+                    for (uint8_t dx = 0; dx < 2; dx++)
+                        setLedPixel(headX + dx, row + dy);
+            }
+            break;
+        }
+        case TRANSITION_BARN:
+        {
+            int close = (int) ((f * 17UL) / 40UL);
+            for (uint8_t x = 0; x <= maxPosX; x++)
+                if ((int) x >= close && (int) x < 32 - close)
+                    drawSnapshotColumn(x);
+            if (close > 0 && close < 16)
+                for (uint8_t y = 0; y < 8; y++)
+                {
+                    setLedPixel(close - 1, y);
+                    setLedPixel(32 - close, y);
+                }
+            break;
+        }
+        default:
+            break;
     }
-    drawPacmanSprite(x, msgEatFrame);
 
     msgEatFrame++;
-    if (msgEatFrame > 40) {
+    if (msgEatFrame > 40)
+    {
         msgEatActive = false;
-        if (msgEatPending) {
+        if (msgEatPending)
+        {
             msgEatPending = false;
             showMsg = true;
         }
@@ -3722,6 +3968,7 @@ void setup() {
     else if (strlen(settings.weatherCity) == 0)
         Serial.println("Weather: enabled but city is empty");
     SPI.begin();
+    rngState = micros() ^ 0x9E3779B9UL;   // seed the display-transition randomizer
     helpArr_init();
     max7219_init();
     max7219_set_brightness(settings.brightness);//0-15
@@ -4254,7 +4501,7 @@ void loop() {
             f_tckr50ms = false;
             if (Update.isRunning() && otaRebootAt == 0)
                 continue;   // keep the display/SPI quiet while firmware is being written
-            if (msgEatActive)   // Pac-Man is eating the previous display frame
+            if (msgEatActive)   // a display-change transition is running
             {
                 clearLEDarr();
                 drawMsgEatAnimation();
