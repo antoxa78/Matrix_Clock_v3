@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.3.3"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.3.4"   // shown on the settings page
 
 // Rain warning tuning. The current rain rate uses settings.rainThresh10;
 // these values control the forecast-based part of the warning.
@@ -67,7 +67,7 @@ struct ClockSettings {
     uint8_t resyncHour;      // 0-23
     uint8_t resyncMin;       // 0-59
     uint8_t dstRule;         // 0 = off, 1 = Israel, 2 = EU, 3 = US
-    uint8_t colonAnim;       // colon animation: 0=solid, 1=blink 1Hz, 2=blink slow, 3=double flash, 4=alternate dots
+    uint8_t colonAnim;       // colon animation: 0=solid, 1=blink 1Hz, 2=blink slow, 3=double flash, 4=alternate dots, 5=center out
     uint8_t marquee;         // 0 = off, 1 = marquee border sweep
     uint8_t pulse;           // 0 = off, 1 = brightness pulse
     uint16_t ntpInterval;    // periodic NTP sync interval in minutes, 0 = off
@@ -366,7 +366,7 @@ unsigned short const font1[96][9] = { { 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
         { 0x07, 0x06, 0x08, 0x08, 0x10, 0x08, 0x08, 0x06, 0x00 },   // 0x7b, {
         { 0x07, 0x04, 0x04, 0x04, 0x00, 0x04, 0x04, 0x04, 0x00 },   // 0x7c, |
         { 0x07, 0x0c, 0x02, 0x02, 0x01, 0x02, 0x02, 0x0c, 0x00 },   // 0x7d, }
-        { 0x07, 0x08, 0x15, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00 },   // 0x7e, ~
+        { 0x07, 0x0c, 0x12, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00 },   // 0x7e, degree
         { 0x07, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x00 }    // 0x7f, DEL
 };
 
@@ -636,7 +636,7 @@ void settings_load()
         settings_save();
     }
     bool repaired = false;
-    if (settings.colonAnim > 4) { settings.colonAnim = 0; repaired = true; }   // new fields: 0xFF from older firmware = off
+    if (settings.colonAnim > 5) { settings.colonAnim = 0; repaired = true; }   // new fields: 0xFF from older firmware = off
     settings.marquee = 0;   // effects removed from the settings menu, keep disabled
     settings.pulse = 0;
     if (settings.ntpInterval > 720) { settings.ntpInterval = 0; repaired = true; }   // field added later / garbage from old EEPROM -> off
@@ -1048,7 +1048,7 @@ void handleValues()
     j += "[\"Scroll Date\",\"scrollDate\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.scrollDate) + "\"],";
     j += "[\"Date Interval (min)\",\"scrollDateInt\",null,\"" + String(settings.scrollDateInt) + "\"],";
     j += "[\"Animation Direction\",\"scrollDir\",[[\"0\",\"Up-Down\"],[\"1\",\"Down-Up\"]],\"" + String(settings.scrollDir) + "\"],";
-    j += "[\"Colon Animation\",\"colonAnim\",[[\"0\",\"Solid\"],[\"1\",\"Blink\"],[\"2\",\"Slow\"],[\"3\",\"Dbl\"],[\"4\",\"Alt\"]],\"" + String(settings.colonAnim) + "\"],";
+    j += "[\"Colon Animation\",\"colonAnim\",[[\"0\",\"Solid\"],[\"1\",\"Blink\"],[\"2\",\"Slow\"],[\"3\",\"Dbl\"],[\"4\",\"Alt\"],[\"5\",\"Center Out\"]],\"" + String(settings.colonAnim) + "\"],";
     j += "[\"Digit Animation\",\"digitAnim\",[[\"0\",\"Off\"],[\"1\",\"Roll\"],[\"2\",\"Flip\"],[\"3\",\"Wipe\"],[\"4\",\"Fade\"],[\"5\",\"Drop\"]],\"" + String(settings.digitAnim) + "\"],";
     j += "[\"NTP Resync\",\"resync\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.resync) + "\"],";
     j += "[\"Resync Hour\",\"resyncHour\",null,\"" + String(settings.resyncHour) + "\"],";
@@ -1320,7 +1320,7 @@ void handleSave()
     settings.scrollDate = (uint8_t) (server.arg("scrollDate").toInt() ? 1 : 0);
     settings.scrollDateInt = (uint16_t) constrain(server.arg("scrollDateInt").toInt(), 1, 120);
     settings.scrollDir = (uint8_t) (server.arg("scrollDir").toInt() ? 1 : 0);
-    settings.colonAnim = (uint8_t) constrain(server.arg("colonAnim").toInt(), 0, 4);
+    settings.colonAnim = (uint8_t) constrain(server.arg("colonAnim").toInt(), 0, 5);
     if (server.hasArg("digitAnim")) settings.digitAnim = (uint8_t) constrain(server.arg("digitAnim").toInt(), 0, 5);
     settings.marquee = 0;   // removed from settings menu, keep disabled
     settings.pulse = 0;
@@ -2949,6 +2949,27 @@ void drawDigitCell(uint8_t idx, uint8_t val, int baseX, bool small)
 
 void drawColon(int baseX)   // separator; baseX is the same position char2Arr(':') uses
 {
+    if (settings.colonAnim == 5)   // dots run from the centre to the top/bottom edges
+    {
+        uint8_t rows[8];
+        glyphRows(':', false, 0, 0, rows);
+        uint8_t dot = 0;
+        for (uint8_t y = 0; y < 8; y++) dot |= rows[y];
+        memset(rows, 0, sizeof(rows));
+        unsigned long phase = millis() % 1200UL;
+        uint8_t off = (phase < 800UL) ? (uint8_t) ((phase * 4UL) / 800UL) : 4;
+        int top = 3 - (int) off;
+        int bottom = 4 + (int) off;
+        if (top < 0) top = 0;
+        if (bottom > 6) bottom = 6;
+        rows[top] = dot;
+        rows[top + 1] = dot;
+        rows[bottom] = dot;
+        rows[bottom + 1] = dot;
+        blitRows(rows, baseX - 5);
+        return;
+    }
+
     uint8_t cst = 1;   // 0=off, 1=both dots, 2=top dot, 3=bottom dot
     if (settings.colonAnim == 1) cst = ((millis() / 1000) % 2 == 0) ? 1 : 0;
     else if (settings.colonAnim == 2) cst = ((millis() / 2000) % 2 == 0) ? 1 : 0;
@@ -3626,9 +3647,9 @@ void loop() {
                     else if (settings.weather)
                     {
                         if (settings.weatherCityShow)
-                            snprintf(buf, sizeof buf, "%s Outside Temp: %.1fC, Humidity: %d%%", settings.weatherCity, temp, hum);
+                            snprintf(buf, sizeof buf, "%s  Outside Temp: %.1f ~C  RH: %d %%", settings.weatherCity, temp, hum);
                         else
-                            snprintf(buf, sizeof buf, "Outside Temp: %.1fC, Humidity: %d%%", temp, hum);
+                            snprintf(buf, sizeof buf, "Outside Temp: %.1f ~C  RH: %d %%", temp, hum);
                     }
 
                     if (buf[0] == 0)
