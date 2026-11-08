@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.4.0"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.4.1"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
