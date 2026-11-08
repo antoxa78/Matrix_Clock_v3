@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.3.7"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.3.8"   // shown on the settings page
 
 // Rain warning tuning. The current rain rate uses settings.rainThresh10;
 // these values control the forecast-based part of the warning.
@@ -60,7 +60,7 @@ struct ClockSettings {
     char ntpServer[64];
     int8_t tzOffset;         // hours, e.g. 8 = UTC+8
     uint8_t brightness;      // 0-15
-    uint8_t orient;          // 0 = auto (pin 16), 1 = normal, 2 = flipped
+    uint8_t orient;          // 1 = normal, 2 = flipped
     uint8_t scrollDate;      // 0 = off, 1 = on
     uint8_t scrollDir;       // 0 = Up-Down, 1 = Down-Up
     uint8_t resync;          // 0 = off, 1 = on
@@ -101,9 +101,13 @@ struct ClockSettings {
     uint16_t birthdayFormat; // 0xB17D when the birthday fields are valid
     uint8_t holidayFreq;     // holiday greeting repeat interval in minutes (0 = once/day)
     uint16_t greetingFormat; // 0xB17E when the holiday frequency field is valid
+    uint8_t weatherDetails;  // 0 = off, 1 = rotate weather detail messages
+    uint16_t detailFormat;   // 0xDE7A when the weatherDetails field is valid
+    uint8_t textEffect;      // message effect: 0=scroll, 1=fade, 2=slide down, 3=slide up, 4=blink
+    uint16_t textFxFormat;   // 0xEFF4 when the textEffect field is valid
 };
-ClockSettings settings = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 0, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E };
-const ClockSettings settings_defaults = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 0, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E };
+ClockSettings settings = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF4 };
+const ClockSettings settings_defaults = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF4 };
 bool rtcInitialized = false;
 bool apActive = false;              // AP fallback mode active (settings page accessible)
 bool apShutdownPending = false;     // stopAP ran; softAP shutdown deferred to a quieter moment
@@ -121,6 +125,7 @@ int d_PosX = 0;
 bool showMsg = false;                                // a message is scrolling across the display
 char msg[120] = "";
 uint8_t msgStep = 2;                                 // current message scroll speed (px per 50ms tick)
+unsigned long msgEffectStartMs = 0;
 #define MSG_QUEUE_SIZE 3
 char msgQueue[MSG_QUEUE_SIZE][120];
 uint8_t msgQueueStep[MSG_QUEUE_SIZE];
@@ -214,6 +219,18 @@ uint8_t weatherRainDryChecks = 0;             // consecutive dry checks while la
 float weatherRainLastRate = 0;                // last active values, used for "RAIN ENDING"
 float weatherRainLast1h = 0;
 int weatherRainLastProb = 0;
+float weatherHighC = 0;
+float weatherLowC = 0;
+float weatherUv = 0;
+float weatherWindKmh = 0;
+float weatherPressureHpa = 0;
+int weatherWindDir = 0;
+int weatherDailyProb = 0;
+char weatherSunrise[6] = "";
+char weatherSunset[6] = "";
+bool weatherDetailsValid = false;
+uint16_t weatherDetailCount = 0;
+uint8_t weatherDetailLastPage = 0;
 bool f_tckr1s = false;
 bool f_tckr50ms = false;
 bool kk;
@@ -637,6 +654,7 @@ void settings_load()
     }
     bool repaired = false;
     if (settings.colonAnim > 5) { settings.colonAnim = 0; repaired = true; }   // new fields: 0xFF from older firmware = off
+    if (settings.orient == 0 || settings.orient > 2) { settings.orient = 1; repaired = true; }   // Auto removed: board has no orientation switch
     settings.marquee = 0;   // effects removed from the settings menu, keep disabled
     settings.pulse = 0;
     if (settings.ntpInterval > 720) { settings.ntpInterval = 0; repaired = true; }   // field added later / garbage from old EEPROM -> off
@@ -708,6 +726,20 @@ void settings_load()
         settings.greetingFormat = 0xB17E;
         repaired = true;
     }
+    if (settings.detailFormat != 0xDE7A)
+    {
+        settings.weatherDetails = 1;
+        settings.detailFormat = 0xDE7A;
+        repaired = true;
+    }
+    if (settings.weatherDetails > 1) { settings.weatherDetails = 1; repaired = true; }
+    if (settings.textFxFormat != 0xEFF4)
+    {
+        settings.textEffect = 0;
+        settings.textFxFormat = 0xEFF4;
+        repaired = true;
+    }
+    if (settings.textEffect > 4) { settings.textEffect = 0; repaired = true; }
     if (settings.holidayFreq != 0 && settings.holidayFreq != 15 && settings.holidayFreq != 30
         && settings.holidayFreq != 60 && settings.holidayFreq != 120 && settings.holidayFreq != 240)
     { settings.holidayFreq = 0; repaired = true; }
@@ -800,6 +832,11 @@ bool webAuthOk()   // optional HTTP Basic auth: enabled only when a web password
 }
 //**************************************************************************************************
 void startMsg(const char* text, uint8_t step = 2);   // forward decl, defined below
+void max7219_set_brightness(unsigned short br);
+void rtc_clearOsf();
+float rtc_temp();
+bool rtc_osf();
+int8_t rtc_aging();
 void startAP()   // start fallback AP so the settings page stays reachable without router WiFi
 {
     if (apActive) return;
@@ -864,8 +901,10 @@ void startMsgNow(const char* text, uint8_t step)
     msg[sizeof(msg) - 1] = 0;
     msgStep = step;
     showMsg = true;
+    max7219_set_brightness(settings.brightness);
     z_PosX = 0;
     d_PosX = -8;
+    msgEffectStartMs = millis();
 }
 
 void startNextQueuedMsg()
@@ -881,8 +920,10 @@ void startNextQueuedMsg()
     }
     msgQueueCount--;
     showMsg = true;
+    max7219_set_brightness(settings.brightness);
     z_PosX = 0;
     d_PosX = -8;
+    msgEffectStartMs = millis();
 }
 
 void startMsg(const char* text, uint8_t step)   // scroll a message; queue up to 3 so weather/Shabbat are not lost
@@ -1044,12 +1085,13 @@ void handleValues()
     j += "[\"Time Zone\",\"tz\",null,\"" + String(settings.tzOffset) + "\"],";
     j += "[\"Daylight Saving Time\",\"dst\",[[\"0\",\"Off\"],[\"1\",\"IL\"],[\"2\",\"EU\"],[\"3\",\"US\"]],\"" + String(settings.dstRule) + "\"],";
     j += "[\"Brightness\",\"bright\",null,\"" + String(settings.brightness) + "\"],";
-    j += "[\"Orientation\",\"orient\",[[\"0\",\"Auto\"],[\"1\",\"Norm\"],[\"2\",\"Flip\"]],\"" + String(settings.orient) + "\"],";
+    j += "[\"Orientation\",\"orient\",[[\"1\",\"Norm\"],[\"2\",\"Flip\"]],\"" + String(settings.orient) + "\"],";
     j += "[\"Scroll Date\",\"scrollDate\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.scrollDate) + "\"],";
     j += "[\"Date Interval (min)\",\"scrollDateInt\",null,\"" + String(settings.scrollDateInt) + "\"],";
     j += "[\"Animation Direction\",\"scrollDir\",[[\"0\",\"Up-Down\"],[\"1\",\"Down-Up\"]],\"" + String(settings.scrollDir) + "\"],";
     j += "[\"Colon Animation\",\"colonAnim\",[[\"0\",\"Solid\"],[\"1\",\"Blink\"],[\"2\",\"Slow\"],[\"3\",\"Dbl\"],[\"4\",\"Alt\"],[\"5\",\"Center Out\"]],\"" + String(settings.colonAnim) + "\"],";
     j += "[\"Digit Animation\",\"digitAnim\",[[\"0\",\"Off\"],[\"1\",\"Roll\"],[\"2\",\"Flip\"],[\"3\",\"Wipe\"],[\"4\",\"Fade\"],[\"5\",\"Drop\"]],\"" + String(settings.digitAnim) + "\"],";
+    j += "[\"Message Effect\",\"textEffect\",[[\"0\",\"Scroll\"],[\"1\",\"Fade\"],[\"2\",\"Slide Down\"],[\"3\",\"Slide Up\"],[\"4\",\"Blink\"]],\"" + String(settings.textEffect) + "\"],";
     j += "[\"NTP Resync\",\"resync\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.resync) + "\"],";
     j += "[\"Resync Hour\",\"resyncHour\",null,\"" + String(settings.resyncHour) + "\"],";
     j += "[\"Resync Minute\",\"resyncMin\",null,\"" + String(settings.resyncMin) + "\"],";
@@ -1059,6 +1101,7 @@ void handleValues()
     j += "[\"Show Weather City\",\"weatherCityShow\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.weatherCityShow) + "\"],";
     j += "[\"Weather Interval (min)\",\"weatherInterval\",null,\"" + String(settings.weatherInterval) + "\"],";
     j += "[\"Weather Speed\",\"weatherSpeed\",[[\"1\",\"Slow\"],[\"2\",\"Norm\"],[\"3\",\"Fast\"],[\"4\",\"VFast\"]],\"" + String(settings.weatherSpeed) + "\"],";
+    j += "[\"Weather Details\",\"weatherDetails\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.weatherDetails) + "\"],";
     j += "[\"Rain Warning\",\"rainWarn\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.rainWarn) + "\"],";
     j += "[\"Rain Threshold (mm/h, e.g. 1.2)\",\"rainThresh\",null,\"" + tenthsStr(settings.rainThresh10) + "\"],";
     j += "[\"Heat Warning\",\"heatWarn\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.heatWarn) + "\"],";
@@ -1115,6 +1158,15 @@ void handleWeatherPage()
         j += ",\"omCodeRain\":" + String(weatherRainCodeSoon ? 1 : 0);
         j += ",\"omTemp\":" + String(weatherTempC, 1);
         j += ",\"omHum\":" + String(weatherHumidity);
+        j += ",\"omHigh\":" + String(weatherHighC, 1);
+        j += ",\"omLow\":" + String(weatherLowC, 1);
+        j += ",\"omUv\":" + String(weatherUv, 0);
+        j += ",\"omWind\":" + String(weatherWindKmh, 0);
+        j += ",\"omWindDir\":" + String(weatherWindDir);
+        j += ",\"omPressure\":" + String(weatherPressureHpa, 0);
+        j += ",\"omDailyProb\":" + String(weatherDailyProb);
+        j += ",\"omSunrise\":\"" + String(weatherSunrise) + "\"";
+        j += ",\"omSunset\":\"" + String(weatherSunset) + "\"";
         j += ",\"omAge\":" + String(omAge);
         j += "}";
         server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
@@ -1171,7 +1223,25 @@ void handleWeatherPage()
         page += weatherRainCodeSoon ? "Yes" : "No";
         page += "</td></tr><tr><td>Next 2h peak</td><td>";
         page += String(weatherRainPeak, 1);
-        page += " mm/h</td></tr><tr><td>Your threshold</td><td>";
+        page += " mm/h</td></tr><tr><td>Today high / low</td><td>";
+        page += String(weatherHighC, 1);
+        page += " / ";
+        page += String(weatherLowC, 1);
+        page += " &deg;C</td></tr><tr><td>Sunrise / sunset</td><td>";
+        page += weatherSunrise[0] ? weatherSunrise : "--:--";
+        page += " / ";
+        page += weatherSunset[0] ? weatherSunset : "--:--";
+        page += "</td></tr><tr><td>Wind / UV</td><td>";
+        page += String(weatherWindKmh, 0);
+        page += " km/h ";
+        page += windDirName(weatherWindDir);
+        page += " / ";
+        page += String(weatherUv, 0);
+        page += "</td></tr><tr><td>Pressure / rain chance</td><td>";
+        page += String(weatherPressureHpa, 0);
+        page += " hPa / ";
+        page += String(weatherDailyProb);
+        page += " %</td></tr><tr><td>Your threshold</td><td>";
         page += tenthsStr(settings.rainThresh10);
         page += " mm/h</td></tr><tr><td>Rain warning</td><td class=";
         if (!settings.rainWarn) page += "no>Off";
@@ -1227,6 +1297,13 @@ void handleStatus()
     j += ",\"sketch\":" + String(ESP.getSketchSize());
     j += ",\"freeSketch\":" + String(ESP.getFreeSketchSpace());
     j += ",\"ota\":" + String(Update.isRunning() ? 1 : 0);
+    j += ",\"rtcTemp\":" + String(rtc_temp(), 1);
+    j += ",\"rtcOsf\":" + String(rtc_osf() ? 1 : 0);
+    j += ",\"rtcAging\":" + String(rtc_aging());
+    j += ",\"detailCount\":" + String(weatherDetailCount);
+    j += ",\"detailPage\":" + String(weatherDetailLastPage);
+    j += ",\"orient\":" + String(settings.orient);
+    j += ",\"kk\":" + String(kk ? 1 : 0);
     j += "}";
     server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
     server.sendHeader("Pragma", "no-cache");
@@ -1280,6 +1357,10 @@ void handleReset()
     settings.birthdayFormat = 0xB17D;
     settings.holidayFreq = 0;
     settings.greetingFormat = 0xB17E;
+    settings.weatherDetails = 1;
+    settings.detailFormat = 0xDE7A;
+    settings.textEffect = 0;
+    settings.textFxFormat = 0xEFF4;
     settings_save();
     Serial.printf("Settings reset: NTP=%s rain=%d/%smm heat=%d/%sC\r\n",
                   settings.ntpServer, settings.rainWarn, tenthsStr(settings.rainThresh10).c_str(),
@@ -1316,12 +1397,14 @@ void handleSave()
     settings.ntpServer[sizeof(settings.ntpServer) - 1] = '\0';
     settings.tzOffset = (int8_t) constrain(server.arg("tz").toInt(), -12, 14);
     settings.brightness = (uint8_t) constrain(server.arg("bright").toInt(), 0, 15);
-    settings.orient = (uint8_t) constrain(server.arg("orient").toInt(), 0, 2);
+    settings.orient = (uint8_t) constrain(server.arg("orient").toInt(), 1, 2);
     settings.scrollDate = (uint8_t) (server.arg("scrollDate").toInt() ? 1 : 0);
     settings.scrollDateInt = (uint16_t) constrain(server.arg("scrollDateInt").toInt(), 1, 120);
     settings.scrollDir = (uint8_t) (server.arg("scrollDir").toInt() ? 1 : 0);
     settings.colonAnim = (uint8_t) constrain(server.arg("colonAnim").toInt(), 0, 5);
     if (server.hasArg("digitAnim")) settings.digitAnim = (uint8_t) constrain(server.arg("digitAnim").toInt(), 0, 5);
+    if (server.hasArg("textEffect")) settings.textEffect = (uint8_t) constrain(server.arg("textEffect").toInt(), 0, 4);
+    settings.textFxFormat = 0xEFF4;
     settings.marquee = 0;   // removed from settings menu, keep disabled
     settings.pulse = 0;
     settings.resync = (uint8_t) (server.arg("resync").toInt() ? 1 : 0);
@@ -1334,6 +1417,8 @@ void handleSave()
     settings.weatherCityShow = (uint8_t) (server.arg("weatherCityShow").toInt() ? 1 : 0);
     settings.weatherInterval = (uint16_t) constrain(server.arg("weatherInterval").toInt(), 1, 240);
     settings.weatherSpeed = (uint8_t) constrain(server.arg("weatherSpeed").toInt(), 1, 4);
+    settings.weatherDetails = (uint8_t) (server.arg("weatherDetails").toInt() ? 1 : 0);
+    settings.detailFormat = 0xDE7A;
     settings.rainWarn = (uint8_t) (server.arg("rainWarn").toInt() ? 1 : 0);
     settings.heatWarn = (uint8_t) (server.arg("heatWarn").toInt() ? 1 : 0);
     String rainArg = server.arg("rainThresh");
@@ -1401,6 +1486,8 @@ void handleSave()
     }
     settings.birthdayFormat = 0xB17D;
     settings.greetingFormat = 0xB17E;
+    settings.detailFormat = 0xDE7A;
+    settings.textFxFormat = 0xEFF4;
     settings.dstRule = (uint8_t) constrain(server.arg("dst").toInt(), 0, 3);
     settings_save();
     Serial.printf("Settings saved, SSID:%s PSW:%s WPAUTH:%s\r\n", settings.ssid, passHidden(settings.pass), settings.webPass[0] ? "set" : "none");
@@ -1722,6 +1809,59 @@ int parseJsonNumberArray(const String& s, const char* key, double* out, int maxC
     return count;
 }
 
+void jsonFirstTimeAfter(const String& s, const char* key, char* out, size_t outSize)
+{
+    if (outSize < 6) return;
+    out[0] = 0;
+    int p = s.indexOf(key);   // key must include the opening '['
+    if (p < 0) return;
+    p += (int) strlen(key);
+    while (p < (int) s.length() && s[p] == ' ') p++;
+    if (p >= (int) s.length() || s[p] != '"') return;
+    p++;
+    int e = s.indexOf('"', p);
+    if (e < 0) return;
+    int t = s.indexOf('T', p);
+    if (t < 0 || t + 6 > e) return;
+    strncpy(out, s.c_str() + t + 1, 5);
+    out[5] = 0;
+}
+
+const char* windDirName(int deg)
+{
+    static const char* dirs[] = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" };
+    int idx = ((deg + 22) / 45) % 8;
+    if (idx < 0) idx = 0;
+    return dirs[idx];
+}
+
+void buildWeatherDetail(char* out, size_t outSize, uint8_t page)
+{
+    switch (page)
+    {
+        case 0:
+            snprintf(out, outSize, "TODAY HIGH %.1f ~C  LOW %.1f ~C", weatherHighC, weatherLowC);
+            break;
+        case 1:
+            snprintf(out, outSize, "SUNRISE %s  SUNSET %s",
+                     weatherSunrise[0] ? weatherSunrise : "--:--",
+                     weatherSunset[0] ? weatherSunset : "--:--");
+            break;
+        case 2:
+            snprintf(out, outSize, "WIND %.0f KM/H %s  UV %.0f",
+                     weatherWindKmh, windDirName(weatherWindDir), weatherUv);
+            break;
+        case 3:
+            snprintf(out, outSize, "PRESSURE %.0f HPA  TODAY RAIN %d%%",
+                     weatherPressureHpa, weatherDailyProb);
+            break;
+        default:
+            snprintf(out, outSize, "RAIN 1H %.1f MM  2H %.1f MM  CHANCE %d%%",
+                     weatherRain1h, weatherRain2h, weatherPrecipProb);
+            break;
+    }
+}
+
 bool fetchWeather(double& temp, int& hum, double& precip, double& rainNext, int& wmoCode,
                   double& rain1h, double& rain2h, int& prob2h, bool& codeRainSoon)   // resolve the city once, then read current conditions + next-2h rain
 {
@@ -1743,8 +1883,10 @@ bool fetchWeather(double& temp, int& hum, double& precip, double& rainNext, int&
     snprintf(latbuf, sizeof latbuf, "%.5f", settings.weatherLat / 1000000.0);
     snprintf(lonbuf, sizeof lonbuf, "%.5f", settings.weatherLon / 1000000.0);
     String url = String("http://api.open-meteo.com/v1/forecast?latitude=") + latbuf + "&longitude=" + lonbuf
-               + "&current=temperature_2m,relative_humidity_2m,precipitation,weather_code"
-               + "&minutely_15=precipitation,precipitation_probability,weather_code&forecast_minutely_15=8";
+               + "&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,pressure_msl"
+               + "&minutely_15=precipitation,precipitation_probability,weather_code&forecast_minutely_15=8"
+               + "&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset,uv_index_max,wind_speed_10m_max,wind_direction_10m_dominant,precipitation_probability_max"
+               + "&timezone=auto";
     String resp;
     if (!httpGet(url, resp)) { Serial.println("Weather: forecast request failed"); return false; }
     temp = jsonDoubleAfter(resp, "\"temperature_2m\":");
@@ -1782,8 +1924,38 @@ bool fetchWeather(double& temp, int& hum, double& precip, double& rainNext, int&
     for (int i = 0; i < codeCount; i++)
         if (isRainCode((int) codes[i])) codeRainSoon = true;
 
+    double dv[1];
+    weatherDetailsValid = false;
+    weatherHighC = 0;
+    weatherLowC = 0;
+    weatherUv = 0;
+    weatherWindKmh = 0;
+    weatherWindDir = 0;
+    weatherDailyProb = 0;
+    weatherPressureHpa = (float) jsonDoubleAfter(resp, "\"pressure_msl\":");
+    if (parseJsonNumberArray(resp, "\"temperature_2m_max\":[", dv, 1) > 0)
+    {
+        weatherHighC = (float) dv[0];
+        weatherDetailsValid = true;
+    }
+    if (parseJsonNumberArray(resp, "\"temperature_2m_min\":[", dv, 1) > 0)
+        weatherLowC = (float) dv[0];
+    if (parseJsonNumberArray(resp, "\"uv_index_max\":[", dv, 1) > 0)
+        weatherUv = (float) dv[0];
+    if (parseJsonNumberArray(resp, "\"wind_speed_10m_max\":[", dv, 1) > 0)
+        weatherWindKmh = (float) dv[0];
+    if (parseJsonNumberArray(resp, "\"wind_direction_10m_dominant\":[", dv, 1) > 0)
+        weatherWindDir = (int) dv[0];
+    if (parseJsonNumberArray(resp, "\"precipitation_probability_max\":[", dv, 1) > 0)
+        weatherDailyProb = (int) dv[0];
+    jsonFirstTimeAfter(resp, "\"sunrise\":[", weatherSunrise, sizeof(weatherSunrise));
+    jsonFirstTimeAfter(resp, "\"sunset\":[", weatherSunset, sizeof(weatherSunset));
+
     Serial.printf("Weather: %.1fC %d%% now %.1fmm/h peak2h %.1fmm/h code %d | 1h %.2fmm 2h %.2fmm prob %d%% codeRain %d\r\n",
                   temp, hum, precip, rainNext, wmoCode, rain1h, rain2h, prob2h, codeRainSoon ? 1 : 0);
+    Serial.printf("Weather detail: high %.1f low %.1f uv %.0f wind %.0f %s pressure %.0f prob %d sunrise %s sunset %s\r\n",
+                  weatherHighC, weatherLowC, weatherUv, weatherWindKmh, windDirName(weatherWindDir),
+                  weatherPressureHpa, weatherDailyProb, weatherSunrise, weatherSunset);
     weatherTempC = (float) temp;
     weatherHumidity = hum;
     weatherPrecipRate = (float) precip;
@@ -2532,6 +2704,7 @@ void rtc_set(tm* tt) {
     }
     else
     rtc_wochentag((unsigned char) tt->tm_wday);
+    rtc_clearOsf();
 }
 //*****************************Get RTC Temperature*********************************************************************
 float rtc_temp() {
@@ -2546,6 +2719,26 @@ float rtc_temp() {
     t *= 0.25;
     t += highByte;
     return (t); // return temp value
+}
+
+bool rtc_osf()
+{
+    return (rtc_Read(statusREG) & 0x80) != 0;
+}
+
+void rtc_clearOsf()
+{
+    unsigned char s = rtc_Read(statusREG);
+    if (s & 0x80)
+    {
+        s &= ~0x80;
+        rtc_Write(statusREG, s);
+    }
+}
+
+int8_t rtc_aging()
+{
+    return (int8_t) rtc_Read(ageoffsetREG);
 }
 //**************************************************************************************************
 void rtc2mez() {
@@ -3276,6 +3469,7 @@ void startAlertAnimation(uint8_t type, const char* text, uint8_t speed)
 
     // The warning animation has priority over a running clock message/date scroll.
     showMsg = false;
+    max7219_set_brightness(settings.brightness);
     msgQueueCount = 0;
     z_PosX = maxPosX;
     d_PosX = -8;
@@ -3371,6 +3565,8 @@ void setup() {
     rtc_init(SDA, SCL);
     clear_Display();
     refresh_display(); //take info into LEDarr
+    if (rtc_osf())
+        startMsg("RTC LOST TIME - CHECK BATTERY", 2);
     tckr.attach(0.05, timer50ms);    // every 50 msec
     otaWatchdog.attach(1.0, otaWatchdogTick);   // revoke a permanently stalled OTA upload
     //////////////////////////////////
@@ -3676,16 +3872,31 @@ void loop() {
                         f_scroll_x = false;
                     }
                     else
+                    {
                         startMsg(buf, settings.weatherSpeed);
+                        if (settings.weatherDetails && weatherDetailsValid)
+                        {
+                            static uint8_t detailTick = 0;
+                            static uint8_t detailPage = 0;
+                            if (++detailTick >= 4)
+                            {
+                                detailTick = 0;
+                                char detail[120];
+                                buildWeatherDetail(detail, sizeof detail, detailPage);
+                                weatherDetailLastPage = detailPage;
+                                weatherDetailCount++;
+                                detailPage = (uint8_t) ((detailPage + 1) % 5);
+                                startMsg(detail, settings.weatherSpeed);
+                            }
+                        }
+                    }
                 }
                 else if (settings.weather)
                     startMsg("WEATHER FAIL");
             }
         }
         if (f_tckr1s == true)        // flag 1sek
-        {if (settings.orient == 0) kk = !digitalRead(16);      // auto via pin 16
-            else if (settings.orient == 1) kk = 0;              // normal
-            else kk = 1;                                        // flipped
+        {kk = (settings.orient == 2) ? 1 : 0;                   // manual normal/flipped
             static unsigned int wifiCheckCnt = 0;
             static bool reconnectActive = false;
             static unsigned long reconnectStart = 0;
@@ -3936,6 +4147,7 @@ void loop() {
                     z_PosX = maxPosX;
                     d_PosX = -8;
                     showMsg = false;
+                    max7219_set_brightness(settings.brightness);
                     if (weatherAlertMsgActive)   // warning finished; let Shabbat/holiday messages through again
                     {
                         weatherAlertMsgActive = false;
@@ -3965,11 +4177,30 @@ void loop() {
                 int mi, mx = d_PosX;
                 digitAnimCancelAll();
                 clearLEDarr();   // erase clock digits + scroll trails so the message scrolls cleanly
-                for (mi = 0; msg[mi] != 0; mi++) {
-                    int k = (int)(unsigned char) msg[mi] - 32;
-                    if (k >= 0 && k < 96)
-                        char2Arr(msg[mi], mx - 1, 0);
-                    mx -= (k >= 0 && k < 96) ? font1[k][0] : 4;   // step by the actual glyph width; non-ASCII bytes use a space width
+                unsigned long msgElapsed = millis() - msgEffectStartMs;
+                int msgYOff = 0;
+                bool drawMsg = true;
+                if (settings.textEffect == 2 && msgElapsed < 400)
+                    msgYOff = -8 + (int) ((msgElapsed * 8UL) / 400UL);   // slide down in
+                else if (settings.textEffect == 3 && msgElapsed < 400)
+                    msgYOff = 8 - (int) ((msgElapsed * 8UL) / 400UL);    // slide up in
+                else if (settings.textEffect == 4)
+                    drawMsg = ((millis() / 250UL) & 1UL) == 0;           // blink
+                if (settings.textEffect == 1)   // fade in
+                {
+                    uint8_t br = settings.brightness;
+                    if (msgElapsed < 500)
+                        br = (uint8_t) (((uint16_t) settings.brightness * msgElapsed) / 500UL);
+                    max7219_set_brightness(br);
+                }
+                if (drawMsg)
+                {
+                    for (mi = 0; msg[mi] != 0; mi++) {
+                        int k = (int)(unsigned char) msg[mi] - 32;
+                        if (k >= 0 && k < 96)
+                            char2Arr(msg[mi], mx - 1, msgYOff);
+                        mx -= (k >= 0 && k < 96) ? font1[k][0] : 4;   // step by the actual glyph width; non-ASCII bytes use a space width
+                    }
                 }
             }
             else {
