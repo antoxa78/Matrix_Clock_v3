@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.4.1"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.4.2"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -146,9 +146,6 @@ int d_PosX = 0;
 bool showMsg = false;                                // a message is scrolling across the display
 char msg[120] = "";
 uint8_t msgStep = 2;                                 // current message scroll speed (px per 50ms tick)
-bool pacmanActive = false;                            // Pac-Man runs after a message finishes
-uint8_t pacmanFrame = 0;
-uint16_t pacmanRuns = 0;
 bool msgEatActive = false;                             // a display-change transition is running
 bool msgEatPending = false;                            // a message waits for the transition to finish
 uint8_t msgEatFrame = 0;
@@ -952,7 +949,6 @@ void startMsgNow(const char* text, uint8_t step)
     strncpy(msg, text, sizeof(msg) - 1);
     msg[sizeof(msg) - 1] = 0;
     msgStep = step;
-    pacmanActive = false;
     if (settings.displayTransition != TRANSITION_OFF && displayHasPixels())
         startMsgEatTransition(true);
     else
@@ -975,7 +971,6 @@ void startNextQueuedMsg()
     }
     msgQueueCount--;
     showMsg = true;
-    pacmanActive = false;
     max7219_set_brightness(settings.brightness);
     z_PosX = 0;
     d_PosX = -8;
@@ -1359,7 +1354,6 @@ void handleStatus()
     j += ",\"rtcAging\":" + String(rtc_aging());
     j += ",\"detailCount\":" + String(weatherDetailCount);
     j += ",\"detailPage\":" + String(weatherDetailLastPage);
-    j += ",\"pacman\":" + String(pacmanRuns);
     j += ",\"orient\":" + String(settings.orient);
     j += ",\"kk\":" + String(kk ? 1 : 0);
     j += "}";
@@ -3404,7 +3398,6 @@ void startMsgEatTransition(bool pending)
     msgEatActive = true;
     msgEatPending = pending;
     msgEatFrame = 0;
-    pacmanActive = false;
     if (pending)
         showMsg = false;
 }
@@ -3577,37 +3570,6 @@ void drawMsgEatAnimation()   // play the selected display-change animation
             msgEatPending = false;
             showMsg = true;
         }
-    }
-}
-
-void startPacmanAnimation()
-{
-    pacmanActive = true;
-    pacmanFrame = 0;
-    pacmanRuns++;
-    showMsg = false;
-    max7219_set_brightness(settings.brightness);
-    z_PosX = maxPosX;
-    d_PosX = -8;
-    clearLEDarr();
-}
-
-void drawPacmanAnimation()   // 2 s: Pac-Man crosses the display eating the dots
-{
-    int x = -8 + (int) pacmanFrame;
-
-    for (int dotX = 6; dotX <= 30; dotX += 6)   // dots disappear as Pac-Man reaches them
-        if (x + 7 < dotX)
-            setLedPixel(dotX, 4);
-
-    drawPacmanSprite(x, pacmanFrame);
-
-    pacmanFrame++;
-    if (pacmanFrame > 40)   // sprite is completely off the right edge
-    {
-        pacmanActive = false;
-        if (msgQueueCount > 0)
-            startNextQueuedMsg();
     }
 }
 
@@ -3875,7 +3837,6 @@ void startAlertAnimation(uint8_t type, const char* text, uint8_t speed)
 
     // The warning animation has priority over a running clock message/date scroll.
     showMsg = false;
-    pacmanActive = false;
     msgEatActive = false;
     msgEatPending = false;
     max7219_set_brightness(settings.brightness);
@@ -4573,12 +4534,7 @@ void loop() {
                     }
                     if (apActive && millis() < apMsgUntil)   // keep repeating the AP setup hint for 30 seconds
                         startMsg(apUpdateMode ? "AP UPDATE 192.168.4.1" : "SETUP MODE AP 192.168.4.1");
-                    else
-                        startPacmanAnimation();
                 }
-            }
-            else if (pacmanActive) {
-                // Pac-Man is advanced in the draw block below; queued messages wait.
             }
             else if (msgQueueCount > 0) {
                 startNextQueuedMsg();
@@ -4630,9 +4586,6 @@ void loop() {
             }
             else if (msgEatActive) {
                 drawMsgEatAnimation();
-            }
-            else if (pacmanActive) {
-                drawPacmanAnimation();
             }
             else {
                 if (f_scroll_x)
