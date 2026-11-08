@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.3.4"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.3.5"   // shown on the settings page
 
 // Rain warning tuning. The current rain rate uses settings.rainThresh10;
 // these values control the forecast-based part of the warning.
@@ -2961,7 +2961,7 @@ void drawColon(int baseX)   // separator; baseX is the same position char2Arr(':
         int top = 3 - (int) off;
         int bottom = 4 + (int) off;
         if (top < 0) top = 0;
-        if (bottom > 6) bottom = 6;
+        if (bottom > 5) bottom = 5;
         rows[top] = dot;
         rows[top + 1] = dot;
         rows[bottom] = dot;
