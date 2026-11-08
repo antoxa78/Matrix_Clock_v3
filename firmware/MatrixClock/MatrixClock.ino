@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.3.8"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.3.9"   // shown on the settings page
 
 // Rain warning tuning. The current rain rate uses settings.rainThresh10;
 // these values control the forecast-based part of the warning.
@@ -1088,7 +1088,7 @@ void handleValues()
     j += "[\"Orientation\",\"orient\",[[\"1\",\"Norm\"],[\"2\",\"Flip\"]],\"" + String(settings.orient) + "\"],";
     j += "[\"Scroll Date\",\"scrollDate\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.scrollDate) + "\"],";
     j += "[\"Date Interval (min)\",\"scrollDateInt\",null,\"" + String(settings.scrollDateInt) + "\"],";
-    j += "[\"Animation Direction\",\"scrollDir\",[[\"0\",\"Up-Down\"],[\"1\",\"Down-Up\"]],\"" + String(settings.scrollDir) + "\"],";
+    j += "[\"Digit Animation Direction\",\"scrollDir\",[[\"0\",\"Up-Down\"],[\"1\",\"Down-Up\"]],\"" + String(settings.scrollDir) + "\"],";
     j += "[\"Colon Animation\",\"colonAnim\",[[\"0\",\"Solid\"],[\"1\",\"Blink\"],[\"2\",\"Slow\"],[\"3\",\"Dbl\"],[\"4\",\"Alt\"],[\"5\",\"Center Out\"]],\"" + String(settings.colonAnim) + "\"],";
     j += "[\"Digit Animation\",\"digitAnim\",[[\"0\",\"Off\"],[\"1\",\"Roll\"],[\"2\",\"Flip\"],[\"3\",\"Wipe\"],[\"4\",\"Fade\"],[\"5\",\"Drop\"]],\"" + String(settings.digitAnim) + "\"],";
     j += "[\"Message Effect\",\"textEffect\",[[\"0\",\"Scroll\"],[\"1\",\"Fade\"],[\"2\",\"Slide Down\"],[\"3\",\"Slide Up\"],[\"4\",\"Blink\"]],\"" + String(settings.textEffect) + "\"],";
