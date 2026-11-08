@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.4.4"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.4.5"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -1285,7 +1285,7 @@ void handleWeatherPage()
         page += weatherSunrise[0] ? weatherSunrise : "--:--";
         page += " / ";
         page += weatherSunset[0] ? weatherSunset : "--:--";
-        page += "</td></tr><tr><td>Max wind / UV index</td><td>";
+        page += "</td></tr><tr><td>Current wind / UV max</td><td>";
         page += String(weatherWindKmh, 0);
         page += " km/h ";
         page += windDirName(weatherWindDir);
@@ -1939,7 +1939,7 @@ void buildWeatherDetail(char* out, size_t outSize, uint8_t page)
                      weatherSunset[0] ? weatherSunset : "--:--");
             break;
         case 2:
-            snprintf(out, outSize, "MAX WIND %.0f KM/H %s  UV INDEX %.0f",
+            snprintf(out, outSize, "WIND NOW %.0f KM/H %s  UV MAX %.0f",
                      weatherWindKmh, windDirName(weatherWindDir), weatherUv);
             break;
         case 3:
@@ -1974,9 +1974,9 @@ bool fetchWeather(double& temp, int& hum, double& precip, double& rainNext, int&
     snprintf(latbuf, sizeof latbuf, "%.5f", settings.weatherLat / 1000000.0);
     snprintf(lonbuf, sizeof lonbuf, "%.5f", settings.weatherLon / 1000000.0);
     String url = String("http://api.open-meteo.com/v1/forecast?latitude=") + latbuf + "&longitude=" + lonbuf
-               + "&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,pressure_msl"
+               + "&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,pressure_msl,wind_speed_10m,wind_direction_10m"
                + "&minutely_15=precipitation,precipitation_probability,weather_code&forecast_minutely_15=8"
-               + "&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset,uv_index_max,wind_speed_10m_max,wind_direction_10m_dominant,precipitation_probability_max"
+               + "&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset,uv_index_max,precipitation_probability_max"
                + "&timezone=auto&wind_speed_unit=kmh";
     String resp;
     if (!httpGet(url, resp)) { Serial.println("Weather: forecast request failed"); return false; }
@@ -2040,10 +2040,8 @@ bool fetchWeather(double& temp, int& hum, double& precip, double& rainNext, int&
     weatherDetailsValid = weatherHighValid && weatherLowValid;
     if (parseJsonNumberArray(resp, "\"uv_index_max\":[", dv, 1) > 0)
         weatherUv = (float) dv[0];
-    if (parseJsonNumberArray(resp, "\"wind_speed_10m_max\":[", dv, 1) > 0)
-        weatherWindKmh = (float) dv[0];
-    if (parseJsonNumberArray(resp, "\"wind_direction_10m_dominant\":[", dv, 1) > 0)
-        weatherWindDir = (int) dv[0];
+    weatherWindKmh = (float) jsonDoubleAfter(resp, "\"wind_speed_10m\":");
+    weatherWindDir = (int) jsonDoubleAfter(resp, "\"wind_direction_10m\":");
     if (parseJsonNumberArray(resp, "\"precipitation_probability_max\":[", dv, 1) > 0)
         weatherDailyProb = (int) dv[0];
     jsonFirstTimeAfter(resp, "\"sunrise\":[", weatherSunrise, sizeof(weatherSunrise));
