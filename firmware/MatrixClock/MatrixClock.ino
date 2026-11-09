@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.4.6"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.4.7"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -3094,11 +3094,11 @@ DigitAnimState digitAnim[6];
 uint8_t digitAnimFrames(uint8_t mode)   // number of 50 ms frames for one transition
 {
     switch (mode) {
-        case DIGIT_ANIM_ROLL: return 6;   // 300 ms
-        case DIGIT_ANIM_FLIP: return 4;   // 200 ms
-        case DIGIT_ANIM_WIPE: return 5;   // 250 ms
-        case DIGIT_ANIM_FADE: return 6;   // 300 ms
-        case DIGIT_ANIM_DROP: return 6;   // 300 ms
+        case DIGIT_ANIM_ROLL: return 9;   // 450 ms
+        case DIGIT_ANIM_FLIP: return 8;   // 400 ms
+        case DIGIT_ANIM_WIPE: return 8;   // 400 ms
+        case DIGIT_ANIM_FADE: return 8;   // 400 ms
+        case DIGIT_ANIM_DROP: return 10;  // 500 ms
         default: return 1;
     }
 }
@@ -3181,54 +3181,64 @@ void drawDigitTransition(uint8_t idx, int baseX, bool small)
     glyphRows((uint8_t) (48 + a.newVal), small, 0, 0, newRows);
 
     if (mode == DIGIT_ANIM_ROLL) {
-        uint16_t off = (p * 8) >> 8;
+        uint16_t off = (p * 8 + 128) >> 8;
         int8_t oldDy = (settings.scrollDir == 0) ? -(int8_t) off : (int8_t) off;
         int8_t newDy = (settings.scrollDir == 0) ? (int8_t) (8 - off) : (int8_t) (off - 8);
         glyphRows((uint8_t) (48 + a.oldVal), small, 0, oldDy, oldRows);
         glyphRows((uint8_t) (48 + a.newVal), small, 0, newDy, newRows);
         for (uint8_t y = 0; y < 8; y++) out[y] = oldRows[y] | newRows[y];
     } else if (mode == DIGIT_ANIM_FLIP) {
-        bool topFirst = (settings.scrollDir == 0);
-        if (f == 0)
-            for (uint8_t y = 0; y < 8; y++) out[y] = oldRows[y];
-        else if (f + 1 >= a.total)
-            for (uint8_t y = 0; y < 8; y++) out[y] = newRows[y];
-        else if (f == 1) {
-            for (uint8_t y = 0; y < 8; y++)
-                out[y] = topFirst ? ((y < 4) ? oldRows[y] : 0) : ((y >= 4) ? oldRows[y] : 0);
+        uint8_t half = a.total / 2;
+        int center = (settings.scrollDir == 0) ? 2 : 5;
+        uint8_t scale;
+        if (f < half) {
+            scale = (uint8_t) (((half - f) * 8) / half);   // 8 -> 2
+            for (uint8_t y = 0; y < 8; y++) {
+                int sy = center + (((int) y - center) * scale) / 8;
+                out[y] = (sy >= 0 && sy < 8) ? oldRows[sy] : 0;
+            }
         } else {
-            for (uint8_t y = 0; y < 8; y++)
-                out[y] = topFirst ? ((y < 4) ? newRows[y] : oldRows[y])
-                                  : ((y < 4) ? oldRows[y] : newRows[y]);
+            scale = (uint8_t) (((f - half + 1) * 8) / half);   // 2 -> 8
+            for (uint8_t y = 0; y < 8; y++) {
+                int sy = center + (((int) y - center) * scale) / 8;
+                out[y] = (sy >= 0 && sy < 8) ? newRows[sy] : 0;
+            }
         }
     } else if (mode == DIGIT_ANIM_WIPE) {
-        uint8_t reveal = (uint8_t) ((p * 8) >> 8);
+        uint8_t reveal = (uint8_t) ((p * 8 + 128) >> 8);
         bool topDown = (settings.scrollDir == 0);
         for (uint8_t y = 0; y < 8; y++) {
             bool useNew = topDown ? (y < reveal) : (y >= 8 - reveal);
             out[y] = useNew ? newRows[y] : oldRows[y];
         }
     } else if (mode == DIGIT_ANIM_FADE) {
-        static const uint8_t bayer4[4][4] = {
-            { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 }
+        static const uint8_t bayer8[8][8] = {
+            { 0, 32,  8, 40,  2, 34, 10, 42 },
+            { 48, 16, 56, 24, 50, 18, 58, 26 },
+            { 12, 44,  4, 36, 14, 46,  6, 38 },
+            { 60, 28, 52, 20, 62, 30, 54, 22 },
+            {  3, 35, 11, 43,  1, 33,  9, 41 },
+            { 51, 19, 59, 27, 49, 17, 57, 25 },
+            { 15, 47,  7, 39, 13, 45,  5, 37 },
+            { 63, 31, 55, 23, 61, 29, 53, 21 }
         };
         for (uint8_t y = 0; y < 8; y++) {
             uint8_t row = 0;
             for (uint8_t c = 0; c < 8; c++) {
-                uint8_t bv = bayer4[y & 3][c & 3];
-                if (settings.scrollDir != 0) bv = 15 - bv;
-                bool useNew = p > (uint16_t) (bv * 16 + 8);
+                uint8_t bv = bayer8[y][c];
+                if (settings.scrollDir != 0) bv = 63 - bv;
+                bool useNew = p > (uint16_t) (bv * 4);
                 uint8_t bit = (useNew ? newRows[y] : oldRows[y]) & (1 << c);
                 row |= bit;
             }
             out[y] = row;
         }
     } else if (mode == DIGIT_ANIM_DROP) {
-        static const int8_t dropNewDn[6] = { -8, -5, -2, 0, 1, 0 };
-        static const int8_t dropOldDn[6] = { 0, 2, 5, 8, 8, 8 };
-        static const int8_t dropNewUp[6] = { 8, 5, 2, 0, -1, 0 };
-        static const int8_t dropOldUp[6] = { 0, -2, -5, -8, -8, -8 };
-        uint8_t i = f < 6 ? f : 5;
+        static const int8_t dropNewDn[10] = { -8, -7, -6, -4, -2, 0, 1, 0, 0, 0 };
+        static const int8_t dropOldDn[10] = {  0,  1,  2,  4,  6, 8, 9, 9, 9, 9 };
+        static const int8_t dropNewUp[10] = {  8,  7,  6,  4,  2, 0, -1, 0, 0, 0 };
+        static const int8_t dropOldUp[10] = {  0, -1, -2, -4, -6, -8, -9, -9, -9, -9 };
+        uint8_t i = f < 10 ? f : 9;
         int8_t newDy = (settings.scrollDir == 0) ? dropNewDn[i] : dropNewUp[i];
         int8_t oldDy = (settings.scrollDir == 0) ? dropOldDn[i] : dropOldUp[i];
         glyphRows((uint8_t) (48 + a.oldVal), small, 0, oldDy, oldRows);
