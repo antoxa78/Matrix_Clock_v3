@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.4.8"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.4.9"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -3326,23 +3326,21 @@ void setLedPixel(int x, int y)
     LEDarr[x >> 3][y] |= (1 << (x & 7));
 }
 
-static const uint8_t pacOpen[8] = {
-    0b00111100, 0b01111110, 0b11111100, 0b11111000,
-    0b11111000, 0b11111100, 0b01111110, 0b00111100
+static const uint8_t pacOpen[5] = {
+    0b01110, 0b11100, 0b11100, 0b11100, 0b01110
 };
-static const uint8_t pacClosed[8] = {
-    0b00111100, 0b01111110, 0b11111111, 0b11111111,
-    0b11111111, 0b11111111, 0b01111110, 0b00111100
+static const uint8_t pacClosed[5] = {
+    0b01110, 0b11111, 0b11111, 0b11111, 0b01110
 };
 
-void drawPacmanSprite(int x, uint8_t frame)
+void drawPacmanSprite(int x, int y, uint8_t frame)
 {
     const uint8_t* sprite = ((frame / 4) & 1) ? pacOpen : pacClosed;
-    for (uint8_t row = 0; row < 8; row++) {
+    for (uint8_t row = 0; row < 5; row++) {
         uint8_t bits = sprite[row];
-        for (uint8_t col = 0; col < 8; col++)
-            if (bits & (0x80 >> col))
-                setLedPixel(x + col, row);
+        for (uint8_t col = 0; col < 5; col++)
+            if (bits & (0x10 >> col))
+                setLedPixel(x + col, y + row);
     }
 }
 
@@ -3448,14 +3446,37 @@ void drawMsgEatAnimation()   // play the selected display-change animation
     {
         case TRANSITION_PACMAN:
         {
-            int x = -8 + (int) f;
+            int x = -6 + (int) f;
+            int y = 1;
             for (uint8_t c = 0; c <= maxPosX; c++)
-                if ((int) c > x + 7)
+                if ((int) c > x + 4)
                     drawSnapshotColumn(c);
+
+            static const uint8_t ghost[5] = {
+                0b01110, 0b11111, 0b10101, 0b11111, 0b10101
+            };
+            static const int8_t ghostBase[3] = { 12, 20, 28 };
+            static const int8_t ghostY[3] = { 0, 1, 3 };
+            for (uint8_t i = 0; i < 3; i++)
+            {
+                int gx = (int) ghostBase[i] - (int) (f / 4);
+                if (gx > x + 4)   // still ahead, not eaten yet
+                {
+                    for (uint8_t row = 0; row < 5; row++)
+                        for (uint8_t col = 0; col < 5; col++)
+                            if (ghost[row] & (0x10 >> col))
+                                setLedPixel(gx + col, ghostY[i] + row);
+                }
+            }
+
             for (int dotX = 4; dotX <= 30; dotX += 4)
-                if (x + 7 < dotX)
+                if (x + 4 < dotX)
+                {
                     setLedPixel(dotX, 4);
-            drawPacmanSprite(x, f);
+                    if (dotX == 28)   // power pellet
+                        setLedPixel(dotX, 3);
+                }
+            drawPacmanSprite(x, y, f);
             break;
         }
         case TRANSITION_WIPE:
@@ -3601,7 +3622,10 @@ void drawMsgEatAnimation()   // play the selected display-change animation
             break;
     }
 
-    msgEatFrame += 2;   // run the transition in about half the time
+    if (transitionType == TRANSITION_PACMAN)
+        msgEatFrame++;   // give the Pac-Man game its full 2 seconds
+    else
+        msgEatFrame += 2;   // other transitions run in about half the time
     if (msgEatFrame > 40)
     {
         msgEatActive = false;
@@ -4622,16 +4646,8 @@ void loop() {
                         mx -= (k >= 0 && k < 96) ? font1[k][0] : 4;   // step by the actual glyph width; non-ASCII bytes use a space width
                     }
                 }
-                if (settings.textEffect == 1)   // smooth fade
-                {
-                    if (settings.brightness > 0)
-                    {
-                        uint8_t br = (uint8_t) (((uint16_t) settings.brightness * enterPx) / 40);
-                        max7219_set_brightness(br);
-                    }
-                    else if (enterLevel < 16)
-                        fadeMessage(enterLevel);   // dither fallback at brightness 0
-                }
+                if (settings.textEffect == 1 && enterLevel < 16)
+                    fadeMessage(enterLevel);   // dither fade; no global brightness pumping
             }
             else if (msgEatActive) {
                 drawMsgEatAnimation();
