@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.5.0"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.5.1"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -51,7 +51,7 @@ enum {
     TRANSITION_RANDOM
 };
 
-#define PACMAN_FRAMES 60   // about 3 seconds at 50 ms per frame
+#define PACMAN_FRAMES 83   // about 4.2 seconds at 50 ms per frame
 
 // Rain warning tuning. The current rain rate uses settings.rainThresh10;
 // these values control the forecast-based part of the warning.
@@ -3449,23 +3449,30 @@ void drawMsgEatAnimation()   // play the selected display-change animation
     {
         case TRANSITION_PACMAN:
         {
-            int x = -6 + ((int) f * 40) / total;
-            int y = 1;
+            int seg = (int) f / 12;
+            int t = (int) f % 12;
+            int x, y;
+            if (seg == 0)      { x = -6 + (t * 10) / 12; y = 0; }
+            else if (seg == 1) { x = 4; y = (t * 3 + 6) / 12; }
+            else if (seg == 2) { x = 4 + (t * 10) / 12; y = 3; }
+            else if (seg == 3) { x = 14; y = 3 - (t * 3 + 6) / 12; }
+            else if (seg == 4) { x = 14 + (t * 10) / 12; y = 0; }
+            else if (seg == 5) { x = 24; y = (t * 3 + 6) / 12; }
+            else               { x = 24 + (t * 10) / 12; y = 3; }
 
             static const uint8_t ghost[5] = {
                 0b01110, 0b11111, 0b10101, 0b11111, 0b10101
             };
-            static const int8_t ghostBase[3] = { 12, 20, 28 };
-            static const int8_t ghostY[3] = { 0, 1, 3 };
-            for (uint8_t i = 0; i < 3; i++)
+            static const int8_t ghostX[4] = { 2, 10, 20, 30 };
+            static const int8_t ghostY[4] = { 0, 3, 0, 3 };
+            for (uint8_t i = 0; i < 4; i++)
             {
-                int gx = (int) ghostBase[i] - (int) (f / 5);
-                if (gx > x + 4)   // still ahead, not eaten yet
+                if (x < ghostX[i])   // still ahead, not eaten yet
                 {
                     for (uint8_t row = 0; row < 5; row++)
                         for (uint8_t col = 0; col < 5; col++)
                             if (ghost[row] & (0x10 >> col))
-                                setLedPixel(gx + col, ghostY[i] + row);
+                                setLedPixel(ghostX[i] + col, ghostY[i] + row);
                 }
             }
 
