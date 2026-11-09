@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.4.9"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.5.0"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -50,6 +50,8 @@ enum {
     TRANSITION_BARN,
     TRANSITION_RANDOM
 };
+
+#define PACMAN_FRAMES 60   // about 3 seconds at 50 ms per frame
 
 // Rain warning tuning. The current rain rate uses settings.rainThresh10;
 // these values control the forecast-based part of the warning.
@@ -3439,18 +3441,16 @@ void startMsgEatTransition(bool pending)
 
 void drawMsgEatAnimation()   // play the selected display-change animation
 {
-    uint8_t f = msgEatFrame;   // 0..40
-    uint16_t progress = (uint16_t) ((f * 256UL) / 40UL);
+    uint8_t f = msgEatFrame;   // 0..total
+    uint8_t total = (transitionType == TRANSITION_PACMAN) ? PACMAN_FRAMES : 40;
+    uint16_t progress = (uint16_t) ((f * 256UL) / total);
 
     switch (transitionType)
     {
         case TRANSITION_PACMAN:
         {
-            int x = -6 + (int) f;
+            int x = -6 + ((int) f * 40) / total;
             int y = 1;
-            for (uint8_t c = 0; c <= maxPosX; c++)
-                if ((int) c > x + 4)
-                    drawSnapshotColumn(c);
 
             static const uint8_t ghost[5] = {
                 0b01110, 0b11111, 0b10101, 0b11111, 0b10101
@@ -3459,7 +3459,7 @@ void drawMsgEatAnimation()   // play the selected display-change animation
             static const int8_t ghostY[3] = { 0, 1, 3 };
             for (uint8_t i = 0; i < 3; i++)
             {
-                int gx = (int) ghostBase[i] - (int) (f / 4);
+                int gx = (int) ghostBase[i] - (int) (f / 5);
                 if (gx > x + 4)   // still ahead, not eaten yet
                 {
                     for (uint8_t row = 0; row < 5; row++)
@@ -3626,7 +3626,7 @@ void drawMsgEatAnimation()   // play the selected display-change animation
         msgEatFrame++;   // give the Pac-Man game its full 2 seconds
     else
         msgEatFrame += 2;   // other transitions run in about half the time
-    if (msgEatFrame > 40)
+    if (msgEatFrame > total)
     {
         msgEatActive = false;
         if (msgEatPending)
