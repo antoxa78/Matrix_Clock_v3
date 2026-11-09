@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.4.5"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.4.6"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -3588,7 +3588,7 @@ void drawMsgEatAnimation()   // play the selected display-change animation
             break;
     }
 
-    msgEatFrame++;
+    msgEatFrame += 2;   // run the transition in about half the time
     if (msgEatFrame > 40)
     {
         msgEatActive = false;
@@ -4593,10 +4593,11 @@ void loop() {
                 if (enterPx < 0) enterPx = 0;
                 if (enterPx > 40) enterPx = 40;
                 uint8_t enterLevel = (uint8_t) ((enterPx * 16) / 40);
+                int eased = 40 - ((40 - enterPx) * (40 - enterPx)) / 40;
                 if (settings.textEffect == 2)
-                    msgYOff = -8 + (int) ((enterPx * 8) / 40);   // slide down in
+                    msgYOff = -8 + (eased * 8) / 40;   // eased slide down
                 else if (settings.textEffect == 3)
-                    msgYOff = 8 - (int) ((enterPx * 8) / 40);    // slide up in
+                    msgYOff = 8 - (eased * 8) / 40;    // eased slide up
                 else if (settings.textEffect == 4)
                     drawMsg = ((millis() / 250UL) & 1UL) == 0;   // blink
                 if (drawMsg)
@@ -4608,8 +4609,16 @@ void loop() {
                         mx -= (k >= 0 && k < 96) ? font1[k][0] : 4;   // step by the actual glyph width; non-ASCII bytes use a space width
                     }
                 }
-                if (settings.textEffect == 1 && enterLevel < 16)
-                    fadeMessage(enterLevel);   // dither fade-in; works even at brightness 0
+                if (settings.textEffect == 1)   // smooth fade
+                {
+                    if (settings.brightness > 0)
+                    {
+                        uint8_t br = (uint8_t) (((uint16_t) settings.brightness * enterPx) / 40);
+                        max7219_set_brightness(br);
+                    }
+                    else if (enterLevel < 16)
+                        fadeMessage(enterLevel);   // dither fallback at brightness 0
+                }
             }
             else if (msgEatActive) {
                 drawMsgEatAnimation();
