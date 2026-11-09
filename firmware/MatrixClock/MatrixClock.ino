@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.5.2"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.5.3"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -3478,10 +3478,7 @@ void drawMsgEatAnimation()   // play the selected display-change animation
 
             for (int dotX = 4; dotX <= 30; dotX += 4)
                 if (x + 4 < dotX)
-                {
-                    setLedPixel(dotX, 2);   // top-lane dot
-                    setLedPixel(dotX, 5);   // bottom-lane dot
-                }
+                    setLedPixel(dotX, 4);   // single center dot row
             drawPacmanSprite(x, y, f);
             break;
         }
