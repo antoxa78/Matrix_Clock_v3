@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.1"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.2"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -126,15 +126,15 @@ struct ClockSettings {
     uint16_t greetingFormat; // 0xB17E when the holiday frequency field is valid
     uint8_t weatherDetails;  // 0 = off, 1 = rotate weather detail messages
     uint16_t detailFormat;   // 0xDE7A when the weatherDetails field is valid
-    uint8_t textEffect;      // message effect: 0=scroll, 1=fade, 2=slide down, 3=slide up, 4=blink
-    uint16_t textFxFormat;   // 0xEFF4 when the textEffect field is valid
+    uint8_t textEffect;      // message effect: 0=scroll, 1=fade, 4=blink
+    uint16_t textFxFormat;   // 0xEFF5 when the textEffect field is valid
     uint8_t dateSpeed;       // date scroll speed: 1=slow, 2=normal, 3=fast
     uint16_t dateSpeedFormat; // 0xDA7E when the dateSpeed field is valid
     uint8_t displayTransition; // 0=off, 1=Pac-Man, 2..11 animations, 12=random order
     uint16_t transitionFormat; // 0xD158 when the displayTransition field is valid
 };
-ClockSettings settings = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF4, 2, 0xDA7E, 1, 0xD158 };
-const ClockSettings settings_defaults = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF4, 2, 0xDA7E, 1, 0xD158 };
+ClockSettings settings = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF5, 2, 0xDA7E, 1, 0xD158 };
+const ClockSettings settings_defaults = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF5, 2, 0xDA7E, 1, 0xD158 };
 bool rtcInitialized = false;
 bool apActive = false;              // AP fallback mode active (settings page accessible)
 bool apShutdownPending = false;     // stopAP ran; softAP shutdown deferred to a quieter moment
@@ -152,8 +152,6 @@ int d_PosX = 0;
 bool showMsg = false;                                // a message is scrolling across the display
 char msg[120] = "";
 uint8_t msgStep = 2;                                 // current message scroll speed (px per 50ms tick)
-unsigned long msgEffectStartMs = 0;
-#define MSG_SLIDE_MS 2000UL                        // slide up/down effect duration
 bool msgEatActive = false;                             // a display-change transition is running
 bool msgEatPending = false;                            // a message waits for the transition to finish
 uint8_t msgEatFrame = 0;
@@ -776,10 +774,11 @@ void settings_load()
         repaired = true;
     }
     if (settings.weatherDetails > 1) { settings.weatherDetails = 1; repaired = true; }
-    if (settings.textFxFormat != 0xEFF4)
+    if (settings.textFxFormat != 0xEFF5)
     {
-        settings.textEffect = 0;
-        settings.textFxFormat = 0xEFF4;
+        if (settings.textEffect == 2 || settings.textEffect == 3)
+            settings.textEffect = 0;   // removed Slide Down/Up
+        settings.textFxFormat = 0xEFF5;
         repaired = true;
     }
     if (settings.textEffect > 4) { settings.textEffect = 0; repaired = true; }
@@ -965,7 +964,6 @@ void startMsgNow(const char* text, uint8_t step)
         startMsgEatTransition(true);
     else
         showMsg = true;
-    msgEffectStartMs = showMsg ? millis() : 0;
     max7219_set_brightness(settings.brightness);
     z_PosX = 0;
     d_PosX = -8;
@@ -984,7 +982,6 @@ void startNextQueuedMsg()
     }
     msgQueueCount--;
     showMsg = true;
-    msgEffectStartMs = millis();
     max7219_set_brightness(settings.brightness);
     z_PosX = 0;
     d_PosX = -8;
@@ -1156,7 +1153,7 @@ void handleValues()
     j += "[\"Digit Animation Direction\",\"scrollDir\",[[\"0\",\"Up-Down\"],[\"1\",\"Down-Up\"]],\"" + String(settings.scrollDir) + "\"],";
     j += "[\"Colon Animation\",\"colonAnim\",[[\"0\",\"Solid\"],[\"1\",\"Blink\"],[\"2\",\"Slow\"],[\"3\",\"Dbl\"],[\"4\",\"Alt\"],[\"5\",\"Center Out\"]],\"" + String(settings.colonAnim) + "\"],";
     j += "[\"Digit Animation\",\"digitAnim\",[[\"0\",\"Off\"],[\"1\",\"Roll\"],[\"2\",\"Flip\"],[\"3\",\"Wipe\"],[\"4\",\"Fade\"],[\"5\",\"Drop\"]],\"" + String(settings.digitAnim) + "\"],";
-    j += "[\"Message Effect\",\"textEffect\",[[\"0\",\"Scroll\"],[\"1\",\"Fade\"],[\"2\",\"Slide Down\"],[\"3\",\"Slide Up\"],[\"4\",\"Blink\"]],\"" + String(settings.textEffect) + "\"],";
+    j += "[\"Message Effect\",\"textEffect\",[[\"0\",\"Scroll\"],[\"1\",\"Fade\"],[\"4\",\"Blink\"]],\"" + String(settings.textEffect) + "\"],";
     j += "[\"Display Transition\",\"displayTransition\",[[\"0\",\"Off\"],[\"1\",\"Pac-Man\"],[\"2\",\"Wipe\"],[\"3\",\"Dissolve\"],[\"4\",\"Blinds\"],[\"5\",\"Checkerboard\"],[\"6\",\"Melt\"],[\"7\",\"Matrix Rain\"],[\"8\",\"Slide\"],[\"9\",\"Sparkle\"],[\"10\",\"Snake\"],[\"11\",\"Barn Door\"],[\"12\",\"Breakout\"],[\"13\",\"Space Invaders\"],[\"14\",\"Tetris\"],[\"15\",\"Random\"]],\"" + String(settings.displayTransition) + "\"],";
     j += "[\"NTP Resync\",\"resync\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.resync) + "\"],";
     j += "[\"Resync Hour\",\"resyncHour\",null,\"" + String(settings.resyncHour) + "\"],";
@@ -1426,7 +1423,7 @@ void handleReset()
     settings.weatherDetails = 1;
     settings.detailFormat = 0xDE7A;
     settings.textEffect = 0;
-    settings.textFxFormat = 0xEFF4;
+    settings.textFxFormat = 0xEFF5;
     settings.dateSpeed = 2;
     settings.dateSpeedFormat = 0xDA7E;
     settings.displayTransition = TRANSITION_PACMAN;
@@ -1491,8 +1488,13 @@ void handleSave()
     settings.scrollDir = (uint8_t) (server.arg("scrollDir").toInt() ? 1 : 0);
     settings.colonAnim = (uint8_t) constrain(server.arg("colonAnim").toInt(), 0, 5);
     if (server.hasArg("digitAnim")) settings.digitAnim = (uint8_t) constrain(server.arg("digitAnim").toInt(), 0, 5);
-    if (server.hasArg("textEffect")) settings.textEffect = (uint8_t) constrain(server.arg("textEffect").toInt(), 0, 4);
-    settings.textFxFormat = 0xEFF4;
+    if (server.hasArg("textEffect"))
+    {
+        uint8_t fx = (uint8_t) constrain(server.arg("textEffect").toInt(), 0, 4);
+        if (fx == 2 || fx == 3) fx = 0;   // removed Slide Down/Up
+        settings.textEffect = fx;
+    }
+    settings.textFxFormat = 0xEFF5;
     if (server.hasArg("displayTransition")) settings.displayTransition = (uint8_t) constrain(server.arg("displayTransition").toInt(), 0, TRANSITION_RANDOM);
     settings.transitionFormat = 0xD158;
     settings.marquee = 0;   // removed from settings menu, keep disabled
@@ -1577,7 +1579,7 @@ void handleSave()
     settings.birthdayFormat = 0xB17D;
     settings.greetingFormat = 0xB17E;
     settings.detailFormat = 0xDE7A;
-    settings.textFxFormat = 0xEFF4;
+    settings.textFxFormat = 0xEFF5;
     settings.dstRule = (uint8_t) constrain(server.arg("dst").toInt(), 0, 3);
     settings_save();
     max7219_set_brightness(settings.brightness);   // apply immediately after Save
@@ -1790,8 +1792,8 @@ void handleUpdateDone()
     if (otaUploadSuccess)
     {
         Serial.println("OTA: success, rebooting");
-        startMsg("UPDATE OK");
-        otaRebootAt = millis() + 5000UL;
+        startMsg("UPDATE SUCCESSFUL");
+        otaRebootAt = millis() + 7000UL;
         server.keepAlive(false);
         server.send(200, "application/json",
                     "{\"ok\":true,\"msg\":\"Firmware updated successfully. Rebooting...\"}");
@@ -3556,38 +3558,37 @@ void drawMsgEatAnimation()   // play the selected display-change animation
         }
         case TRANSITION_TETRIS:
         {
-            // Well walls.
-            for (uint8_t y = 0; y < 8; y++)
+            bool clearLine = (f >= 56);
+            static const int8_t bottomBlocks[5] = { 4, 8, 12, 20, 24 };
+            static const int8_t upperBlocks[4] = { 4, 8, 20, 24 };
+            if (!clearLine)
             {
-                setLedPixel(2, y);
-                setLedPixel(29, y);
-            }
-            // Stack, with a slightly uneven top.
-            for (int x = 4; x <= 24; x += 4)
-            {
-                setLedPixel(x, 6); setLedPixel(x + 1, 6);
-                setLedPixel(x, 7); setLedPixel(x + 1, 7);
+                for (uint8_t i = 0; i < 5; i++)
+                {
+                    int bx = bottomBlocks[i];
+                    setLedPixel(bx, 6); setLedPixel(bx + 1, 6);
+                    setLedPixel(bx, 7); setLedPixel(bx + 1, 7);
+                }
             }
             for (uint8_t i = 0; i < 4; i++)
             {
-                int bx = (i < 2) ? 4 + i * 4 : 20 + (i - 2) * 4;
+                int bx = upperBlocks[i];
                 setLedPixel(bx, 4); setLedPixel(bx + 1, 4);
                 setLedPixel(bx, 5); setLedPixel(bx + 1, 5);
             }
-            // Falling T piece.
+            // Falling T piece; it lands in the gap at x = 14..17.
             static const uint8_t piece[2] = { 0b1110, 0b0100 };
             int px = 14;
             int py = (f * 5) / 48;
             if (py > 4) py = 4;
-            if (f >= 48) py = 5;   // landed on the stack
+            if (f >= 48) py = 5;
             for (uint8_t row = 0; row < 2; row++)
                 for (uint8_t col = 0; col < 4; col++)
                     if (piece[row] & (0x8 >> col))
                         setLedPixel(px + col, py + row);
-            // Completed line flash.
-            if (f >= 52)
+            if (f >= 52 && !clearLine)
                 for (uint8_t x = 3; x <= 28; x++)
-                    setLedPixel(x, 7);
+                    setLedPixel(x, 7);   // completed line flash
             break;
         }
         case TRANSITION_WIPE:
@@ -3745,7 +3746,6 @@ void drawMsgEatAnimation()   // play the selected display-change animation
         {
             msgEatPending = false;
             showMsg = true;
-            msgEffectStartMs = millis();
         }
     }
 }
@@ -4743,16 +4743,7 @@ void loop() {
                 if (enterPx < 0) enterPx = 0;
                 if (enterPx > 40) enterPx = 40;
                 uint8_t enterLevel = (uint8_t) ((enterPx * 16) / 40);
-                unsigned long slideElapsed = millis() - msgEffectStartMs;
-                if (msgEffectStartMs == 0) slideElapsed = 0;
-                if (slideElapsed > MSG_SLIDE_MS) slideElapsed = MSG_SLIDE_MS;
-                uint16_t slideP = (uint16_t) ((slideElapsed * 256UL) / MSG_SLIDE_MS);
-                uint16_t slideEased = (uint16_t) (((uint32_t) slideP * slideP * (768UL - 2UL * slideP)) / 65536UL);
-                if (settings.textEffect == 2)
-                    msgYOff = -8 + (slideEased * 8) / 256;   // smooth slide down
-                else if (settings.textEffect == 3)
-                    msgYOff = 8 - (slideEased * 8) / 256;    // smooth slide up
-                else if (settings.textEffect == 4)
+                if (settings.textEffect == 4)
                     drawMsg = ((millis() / 250UL) & 1UL) == 0;   // blink
                 if (drawMsg)
                 {
