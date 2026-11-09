@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.5.3"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.6.0"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -48,10 +48,14 @@ enum {
     TRANSITION_SPARKLE,
     TRANSITION_SNAKE,
     TRANSITION_BARN,
+    TRANSITION_BREAKOUT,
+    TRANSITION_SPACE,
+    TRANSITION_TETRIS,
     TRANSITION_RANDOM
 };
 
 #define PACMAN_FRAMES 83   // about 4.2 seconds at 50 ms per frame
+#define GAME_FRAMES 60     // about 3 seconds for the other game animations
 
 // Rain warning tuning. The current rain rate uses settings.rainThresh10;
 // these values control the forecast-based part of the warning.
@@ -127,10 +131,10 @@ struct ClockSettings {
     uint8_t dateSpeed;       // date scroll speed: 1=slow, 2=normal, 3=fast
     uint16_t dateSpeedFormat; // 0xDA7E when the dateSpeed field is valid
     uint8_t displayTransition; // 0=off, 1=Pac-Man, 2..11 animations, 12=random order
-    uint16_t transitionFormat; // 0xD157 when the displayTransition field is valid
+    uint16_t transitionFormat; // 0xD158 when the displayTransition field is valid
 };
-ClockSettings settings = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF4, 2, 0xDA7E, 1, 0xD157 };
-const ClockSettings settings_defaults = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF4, 2, 0xDA7E, 1, 0xD157 };
+ClockSettings settings = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF4, 2, 0xDA7E, 1, 0xD158 };
+const ClockSettings settings_defaults = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF4, 2, 0xDA7E, 1, 0xD158 };
 bool rtcInitialized = false;
 bool apActive = false;              // AP fallback mode active (settings page accessible)
 bool apShutdownPending = false;     // stopAP ran; softAP shutdown deferred to a quieter moment
@@ -155,7 +159,7 @@ uint16_t msgEatSnapshot[anzMAX][8];                    // previous display frame
 uint8_t transitionType = TRANSITION_PACMAN;
 uint8_t transitionSeed = 0;
 uint8_t transitionDir = 0;
-uint8_t transitionBag[TRANSITION_BARN];
+uint8_t transitionBag[TRANSITION_TETRIS];
 uint8_t transitionBagPos = 0;
 uint8_t transitionBagCount = 0;
 uint8_t lastRandomType = 0;
@@ -784,10 +788,12 @@ void settings_load()
         repaired = true;
     }
     if (settings.dateSpeed < 1 || settings.dateSpeed > 3) { settings.dateSpeed = 2; repaired = true; }
-    if (settings.transitionFormat != 0xD157)
+    if (settings.transitionFormat != 0xD158)
     {
-        settings.displayTransition = TRANSITION_PACMAN;
-        settings.transitionFormat = 0xD157;
+        // 0xD157 was the v5.5.x marker; value 12 was Random there.
+        if (settings.transitionFormat == 0xD157 && settings.displayTransition == 12)
+            settings.displayTransition = TRANSITION_RANDOM;
+        settings.transitionFormat = 0xD158;
         repaired = true;
     }
     if (settings.displayTransition > TRANSITION_RANDOM) { settings.displayTransition = TRANSITION_PACMAN; repaired = true; }
@@ -1147,7 +1153,7 @@ void handleValues()
     j += "[\"Colon Animation\",\"colonAnim\",[[\"0\",\"Solid\"],[\"1\",\"Blink\"],[\"2\",\"Slow\"],[\"3\",\"Dbl\"],[\"4\",\"Alt\"],[\"5\",\"Center Out\"]],\"" + String(settings.colonAnim) + "\"],";
     j += "[\"Digit Animation\",\"digitAnim\",[[\"0\",\"Off\"],[\"1\",\"Roll\"],[\"2\",\"Flip\"],[\"3\",\"Wipe\"],[\"4\",\"Fade\"],[\"5\",\"Drop\"]],\"" + String(settings.digitAnim) + "\"],";
     j += "[\"Message Effect\",\"textEffect\",[[\"0\",\"Scroll\"],[\"1\",\"Fade\"],[\"2\",\"Slide Down\"],[\"3\",\"Slide Up\"],[\"4\",\"Blink\"]],\"" + String(settings.textEffect) + "\"],";
-    j += "[\"Display Transition\",\"displayTransition\",[[\"0\",\"Off\"],[\"1\",\"Pac-Man\"],[\"2\",\"Wipe\"],[\"3\",\"Dissolve\"],[\"4\",\"Blinds\"],[\"5\",\"Checkerboard\"],[\"6\",\"Melt\"],[\"7\",\"Matrix Rain\"],[\"8\",\"Slide\"],[\"9\",\"Sparkle\"],[\"10\",\"Snake\"],[\"11\",\"Barn Door\"],[\"12\",\"Random\"]],\"" + String(settings.displayTransition) + "\"],";
+    j += "[\"Display Transition\",\"displayTransition\",[[\"0\",\"Off\"],[\"1\",\"Pac-Man\"],[\"2\",\"Wipe\"],[\"3\",\"Dissolve\"],[\"4\",\"Blinds\"],[\"5\",\"Checkerboard\"],[\"6\",\"Melt\"],[\"7\",\"Matrix Rain\"],[\"8\",\"Slide\"],[\"9\",\"Sparkle\"],[\"10\",\"Snake\"],[\"11\",\"Barn Door\"],[\"12\",\"Breakout\"],[\"13\",\"Space Invaders\"],[\"14\",\"Tetris\"],[\"15\",\"Random\"]],\"" + String(settings.displayTransition) + "\"],";
     j += "[\"NTP Resync\",\"resync\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.resync) + "\"],";
     j += "[\"Resync Hour\",\"resyncHour\",null,\"" + String(settings.resyncHour) + "\"],";
     j += "[\"Resync Minute\",\"resyncMin\",null,\"" + String(settings.resyncMin) + "\"],";
@@ -1420,7 +1426,7 @@ void handleReset()
     settings.dateSpeed = 2;
     settings.dateSpeedFormat = 0xDA7E;
     settings.displayTransition = TRANSITION_PACMAN;
-    settings.transitionFormat = 0xD157;
+    settings.transitionFormat = 0xD158;
     settings_save();
     Serial.printf("Settings reset: NTP=%s rain=%d/%smm heat=%d/%sC\r\n",
                   settings.ntpServer, settings.rainWarn, tenthsStr(settings.rainThresh10).c_str(),
@@ -1477,7 +1483,7 @@ void handleSave()
     if (server.hasArg("textEffect")) settings.textEffect = (uint8_t) constrain(server.arg("textEffect").toInt(), 0, 4);
     settings.textFxFormat = 0xEFF4;
     if (server.hasArg("displayTransition")) settings.displayTransition = (uint8_t) constrain(server.arg("displayTransition").toInt(), 0, TRANSITION_RANDOM);
-    settings.transitionFormat = 0xD157;
+    settings.transitionFormat = 0xD158;
     settings.marquee = 0;   // removed from settings menu, keep disabled
     settings.pulse = 0;
     settings.resync = (uint8_t) (server.arg("resync").toInt() ? 1 : 0);
@@ -3400,9 +3406,9 @@ uint8_t pickTransitionType()
     {
         if (transitionBagPos >= transitionBagCount)
         {
-            for (uint8_t i = 0; i < TRANSITION_BARN; i++)
+            for (uint8_t i = 0; i < TRANSITION_TETRIS; i++)
                 transitionBag[i] = i + 1;
-            for (uint8_t i = TRANSITION_BARN - 1; i > 0; i--)
+            for (uint8_t i = TRANSITION_TETRIS - 1; i > 0; i--)
             {
                 uint8_t j = (uint8_t) (rngNext() % (i + 1));
                 uint8_t t = transitionBag[i];
@@ -3416,7 +3422,7 @@ uint8_t pickTransitionType()
                 transitionBag[1] = t;
             }
             transitionBagPos = 0;
-            transitionBagCount = TRANSITION_BARN;
+            transitionBagCount = TRANSITION_TETRIS;
         }
         type = transitionBag[transitionBagPos++];
         lastRandomType = type;
@@ -3442,7 +3448,11 @@ void startMsgEatTransition(bool pending)
 void drawMsgEatAnimation()   // play the selected display-change animation
 {
     uint8_t f = msgEatFrame;   // 0..total
-    uint8_t total = (transitionType == TRANSITION_PACMAN) ? PACMAN_FRAMES : 40;
+    uint8_t total = 40;
+    if (transitionType == TRANSITION_PACMAN)
+        total = PACMAN_FRAMES;
+    else if (transitionType >= TRANSITION_BREAKOUT && transitionType <= TRANSITION_TETRIS)
+        total = GAME_FRAMES;
     uint16_t progress = (uint16_t) ((f * 256UL) / total);
 
     switch (transitionType)
@@ -3480,6 +3490,85 @@ void drawMsgEatAnimation()   // play the selected display-change animation
                 if (x + 4 < dotX)
                     setLedPixel(dotX, 4);   // single center dot row
             drawPacmanSprite(x, y, f);
+            break;
+        }
+        case TRANSITION_BREAKOUT:
+        {
+            for (uint8_t i = 0; i < 8; i++)
+            {
+                int bx = 2 + i * 4;
+                if (i < 8 - (f / 8))
+                {
+                    setLedPixel(bx, 0); setLedPixel(bx + 1, 0);
+                    setLedPixel(bx, 1); setLedPixel(bx + 1, 1);
+                }
+            }
+            int phase = f % 30;
+            int bx = 1 + (phase < 15 ? phase : 30 - phase) * 2;
+            if (bx > 29) bx = 29;
+            int py = f % 20;
+            int by = 1 + (py < 10 ? py / 2 : (20 - py) / 2);
+            int px = bx - 2;
+            if (px < 0) px = 0;
+            if (px > 26) px = 26;
+            for (uint8_t i = 0; i < 6; i++) setLedPixel(px + i, 7);
+            setLedPixel(bx, by); setLedPixel(bx + 1, by);
+            setLedPixel(bx, by + 1); setLedPixel(bx + 1, by + 1);
+            break;
+        }
+        case TRANSITION_SPACE:
+        {
+            static const uint8_t alien[3] = {
+                0b01110, 0b10101, 0b11111
+            };
+            int shift = (f / 8) & 1;
+            for (uint8_t i = 0; i < 3; i++)
+            {
+                if (f < 20 + i * 15)
+                {
+                    int ax = 4 + i * 9 + shift;
+                    for (uint8_t row = 0; row < 3; row++)
+                        for (uint8_t col = 0; col < 5; col++)
+                            if (alien[row] & (0x10 >> col))
+                                setLedPixel(ax + col, 1 + row);
+                }
+            }
+            int sx = 9 + ((f / 6) % 12);
+            for (uint8_t i = 0; i < 5; i++) setLedPixel(sx + i, 7);
+            int by = 6 - (f % 6);
+            int bx = sx + 2;
+            setLedPixel(bx, by);
+            setLedPixel(bx, by + 1);
+            break;
+        }
+        case TRANSITION_TETRIS:
+        {
+            for (int x = 8; x <= 22; x += 4)
+            {
+                setLedPixel(x, 6); setLedPixel(x + 1, 6);
+                setLedPixel(x, 7); setLedPixel(x + 1, 7);
+            }
+            static const uint8_t piece[2] = { 0b1110, 0b0110 };
+            int px = 14;
+            int py = (f * 4) / 50;
+            if (py > 4) py = 4;
+            if (f < 50)
+            {
+                for (uint8_t row = 0; row < 2; row++)
+                    for (uint8_t col = 0; col < 4; col++)
+                        if (piece[row] & (0x8 >> col))
+                            setLedPixel(px + col, py + row);
+            }
+            else
+            {
+                for (uint8_t row = 0; row < 2; row++)
+                    for (uint8_t col = 0; col < 4; col++)
+                        if (piece[row] & (0x8 >> col))
+                            setLedPixel(px + col, 5 + row);
+                if (f >= 54)
+                    for (uint8_t x = 0; x <= maxPosX; x++)
+                        setLedPixel(x, 7);   // line clear
+            }
             break;
         }
         case TRANSITION_WIPE:
@@ -3625,8 +3714,9 @@ void drawMsgEatAnimation()   // play the selected display-change animation
             break;
     }
 
-    if (transitionType == TRANSITION_PACMAN)
-        msgEatFrame++;   // give the Pac-Man game its full 2 seconds
+    if (transitionType == TRANSITION_PACMAN
+        || (transitionType >= TRANSITION_BREAKOUT && transitionType <= TRANSITION_TETRIS))
+        msgEatFrame++;   // give the game animations their full duration
     else
         msgEatFrame += 2;   // other transitions run in about half the time
     if (msgEatFrame > total)
@@ -4275,16 +4365,16 @@ void loop() {
                     {
                         alertType = ALERT_ANIM_HEAT;
                         if (settings.weatherCityShow)
-                            snprintf(buf, sizeof buf, "HEAT WARNING: %.1f ~C  %s  Outside Temp: %.1f ~C  RH: %d %%", heatLimit, settings.weatherCity, temp, hum);
+                            snprintf(buf, sizeof buf, "HEAT WARNING: %.1f ~C  %s  Outside Temp: %.1f ~C , RH: %d %%", heatLimit, settings.weatherCity, temp, hum);
                         else
-                            snprintf(buf, sizeof buf, "HEAT WARNING: %.1f ~C  Outside Temp: %.1f ~C  RH: %d %%", heatLimit, temp, hum);
+                            snprintf(buf, sizeof buf, "HEAT WARNING: %.1f ~C  Outside Temp: %.1f ~C , RH: %d %%", heatLimit, temp, hum);
                     }
                     else if (settings.weather)
                     {
                         if (settings.weatherCityShow)
-                            snprintf(buf, sizeof buf, "%s  Outside Temp: %.1f ~C  RH: %d %%", settings.weatherCity, temp, hum);
+                            snprintf(buf, sizeof buf, "%s  Outside Temp: %.1f ~C , RH: %d %%", settings.weatherCity, temp, hum);
                         else
-                            snprintf(buf, sizeof buf, "Outside Temp: %.1f ~C  RH: %d %%", temp, hum);
+                            snprintf(buf, sizeof buf, "Outside Temp: %.1f ~C , RH: %d %%", temp, hum);
                     }
 
                     if (buf[0] == 0)
