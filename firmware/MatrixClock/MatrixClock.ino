@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.6.1"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.6.2"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -1576,6 +1576,7 @@ void handleSave()
     settings.textFxFormat = 0xEFF4;
     settings.dstRule = (uint8_t) constrain(server.arg("dst").toInt(), 0, 3);
     settings_save();
+    max7219_set_brightness(settings.brightness);   // apply immediately after Save
     Serial.printf("Settings saved, SSID:%s PSW:%s WPAUTH:%s\r\n", settings.ssid, passHidden(settings.pass), settings.webPass[0] ? "set" : "none");
     String page;
     page.reserve(900);
