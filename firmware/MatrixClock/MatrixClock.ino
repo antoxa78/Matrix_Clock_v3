@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.6.2"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.0"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -1145,10 +1145,10 @@ void handleValues()
     j += "[\"Time Zone\",\"tz\",null,\"" + String(settings.tzOffset) + "\"],";
     j += "[\"Daylight Saving Time\",\"dst\",[[\"0\",\"Off\"],[\"1\",\"IL\"],[\"2\",\"EU\"],[\"3\",\"US\"]],\"" + String(settings.dstRule) + "\"],";
     j += "[\"Brightness\",\"bright\",null,\"" + String(settings.brightness) + "\"],";
-    j += "[\"Orientation\",\"orient\",[[\"1\",\"Norm\"],[\"2\",\"Flip\"]],\"" + String(settings.orient) + "\"],";
+    j += "[\"Orientation\",\"orient\",[[\"1\",\"Normal\"],[\"2\",\"Flip\"]],\"" + String(settings.orient) + "\"],";
     j += "[\"Scroll Date\",\"scrollDate\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.scrollDate) + "\"],";
     j += "[\"Date Interval (min)\",\"scrollDateInt\",null,\"" + String(settings.scrollDateInt) + "\"],";
-    j += "[\"Date Scroll Speed\",\"dateSpeed\",[[\"1\",\"Slow\"],[\"2\",\"Norm\"],[\"3\",\"Fast\"]],\"" + String(settings.dateSpeed) + "\"],";
+    j += "[\"Date Scroll Speed\",\"dateSpeed\",[[\"1\",\"Slow\"],[\"2\",\"Normal\"],[\"3\",\"Fast\"]],\"" + String(settings.dateSpeed) + "\"],";
     j += "[\"Digit Animation Direction\",\"scrollDir\",[[\"0\",\"Up-Down\"],[\"1\",\"Down-Up\"]],\"" + String(settings.scrollDir) + "\"],";
     j += "[\"Colon Animation\",\"colonAnim\",[[\"0\",\"Solid\"],[\"1\",\"Blink\"],[\"2\",\"Slow\"],[\"3\",\"Dbl\"],[\"4\",\"Alt\"],[\"5\",\"Center Out\"]],\"" + String(settings.colonAnim) + "\"],";
     j += "[\"Digit Animation\",\"digitAnim\",[[\"0\",\"Off\"],[\"1\",\"Roll\"],[\"2\",\"Flip\"],[\"3\",\"Wipe\"],[\"4\",\"Fade\"],[\"5\",\"Drop\"]],\"" + String(settings.digitAnim) + "\"],";
@@ -1157,12 +1157,12 @@ void handleValues()
     j += "[\"NTP Resync\",\"resync\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.resync) + "\"],";
     j += "[\"Resync Hour\",\"resyncHour\",null,\"" + String(settings.resyncHour) + "\"],";
     j += "[\"Resync Minute\",\"resyncMin\",null,\"" + String(settings.resyncMin) + "\"],";
-    j += "[\"NTP Interval (min)\",\"ntpInterval\",null,\"" + String(settings.ntpInterval) + "\"],";
+    j += "[\"NTP Resync Interval (min)\",\"ntpInterval\",null,\"" + String(settings.ntpInterval) + "\"],";
     j += "[\"Weather Messages (warnings independent)\",\"weather\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.weather) + "\"],";
     j += "[\"Weather City\",\"weatherCity\",null,\"" + jsonEsc(settings.weatherCity) + "\"],";
     j += "[\"Show Weather City\",\"weatherCityShow\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.weatherCityShow) + "\"],";
     j += "[\"Weather Interval (min)\",\"weatherInterval\",null,\"" + String(settings.weatherInterval) + "\"],";
-    j += "[\"Weather Speed\",\"weatherSpeed\",[[\"1\",\"Slow\"],[\"2\",\"Norm\"],[\"3\",\"Fast\"]],\"" + String(settings.weatherSpeed) + "\"],";
+    j += "[\"Weather Speed\",\"weatherSpeed\",[[\"1\",\"Slow\"],[\"2\",\"Normal\"],[\"3\",\"Fast\"]],\"" + String(settings.weatherSpeed) + "\"],";
     j += "[\"Weather Details\",\"weatherDetails\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.weatherDetails) + "\"],";
     j += "[\"Rain Warning\",\"rainWarn\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.rainWarn) + "\"],";
     j += "[\"Rain Threshold (mm/h, e.g. 1.2)\",\"rainThresh\",null,\"" + tenthsStr(settings.rainThresh10) + "\"],";
