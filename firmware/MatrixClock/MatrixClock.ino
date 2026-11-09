@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.0"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.1"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -152,6 +152,8 @@ int d_PosX = 0;
 bool showMsg = false;                                // a message is scrolling across the display
 char msg[120] = "";
 uint8_t msgStep = 2;                                 // current message scroll speed (px per 50ms tick)
+unsigned long msgEffectStartMs = 0;
+#define MSG_SLIDE_MS 2000UL                        // slide up/down effect duration
 bool msgEatActive = false;                             // a display-change transition is running
 bool msgEatPending = false;                            // a message waits for the transition to finish
 uint8_t msgEatFrame = 0;
@@ -963,6 +965,7 @@ void startMsgNow(const char* text, uint8_t step)
         startMsgEatTransition(true);
     else
         showMsg = true;
+    msgEffectStartMs = showMsg ? millis() : 0;
     max7219_set_brightness(settings.brightness);
     z_PosX = 0;
     d_PosX = -8;
@@ -981,6 +984,7 @@ void startNextQueuedMsg()
     }
     msgQueueCount--;
     showMsg = true;
+    msgEffectStartMs = millis();
     max7219_set_brightness(settings.brightness);
     z_PosX = 0;
     d_PosX = -8;
@@ -3741,6 +3745,7 @@ void drawMsgEatAnimation()   // play the selected display-change animation
         {
             msgEatPending = false;
             showMsg = true;
+            msgEffectStartMs = millis();
         }
     }
 }
@@ -4738,11 +4743,15 @@ void loop() {
                 if (enterPx < 0) enterPx = 0;
                 if (enterPx > 40) enterPx = 40;
                 uint8_t enterLevel = (uint8_t) ((enterPx * 16) / 40);
-                int eased = 40 - ((40 - enterPx) * (40 - enterPx)) / 40;
+                unsigned long slideElapsed = millis() - msgEffectStartMs;
+                if (msgEffectStartMs == 0) slideElapsed = 0;
+                if (slideElapsed > MSG_SLIDE_MS) slideElapsed = MSG_SLIDE_MS;
+                uint16_t slideP = (uint16_t) ((slideElapsed * 256UL) / MSG_SLIDE_MS);
+                uint16_t slideEased = (uint16_t) (((uint32_t) slideP * slideP * (768UL - 2UL * slideP)) / 65536UL);
                 if (settings.textEffect == 2)
-                    msgYOff = -8 + (eased * 8) / 40;   // eased slide down
+                    msgYOff = -8 + (slideEased * 8) / 256;   // smooth slide down
                 else if (settings.textEffect == 3)
-                    msgYOff = 8 - (eased * 8) / 40;    // eased slide up
+                    msgYOff = 8 - (slideEased * 8) / 256;    // smooth slide up
                 else if (settings.textEffect == 4)
                     drawMsg = ((millis() / 250UL) & 1UL) == 0;   // blink
                 if (drawMsg)
