@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.4.7"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.4.8"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -1930,24 +1930,24 @@ void buildWeatherDetail(char* out, size_t outSize, uint8_t page)
             else strcpy(hi, "--");
             if (weatherLowValid) snprintf(lo, sizeof lo, "%.1f ~C", weatherLowC);
             else strcpy(lo, "--");
-            snprintf(out, outSize, "TODAY HIGH TEMP. %s  LOW TEMP. %s", hi, lo);
+            snprintf(out, outSize, "TODAY HIGH TEMP: %s  LOW TEMP: %s", hi, lo);
             break;
         }
         case 1:
-            snprintf(out, outSize, "SUNRISE %s  SUNSET %s",
+            snprintf(out, outSize, "SUNRISE: %s  SUNSET: %s",
                      weatherSunrise[0] ? weatherSunrise : "--:--",
                      weatherSunset[0] ? weatherSunset : "--:--");
             break;
         case 2:
-            snprintf(out, outSize, "WIND NOW %.0f KM/H %s  UV MAX %.0f",
+            snprintf(out, outSize, "WIND NOW: %.0f KM/H %s  UV MAX: %.0f",
                      weatherWindKmh, windDirName(weatherWindDir), weatherUv);
             break;
         case 3:
-            snprintf(out, outSize, "PRESSURE %.0f HPA  TODAY RAIN CHANCE %d%%",
+            snprintf(out, outSize, "PRESSURE: %.0f HPA  TODAY RAIN CHANCE: %d%%",
                      weatherPressureHpa, weatherDailyProb);
             break;
         default:
-            snprintf(out, outSize, "RAIN 1H %.1f MM  2H %.1f MM  RAIN CHANCE %d%%",
+            snprintf(out, outSize, "RAIN 1H %.1f MM,  2H %.1f MM,  RAIN CHANCE: %d%%",
                      weatherRain1h, weatherRain2h, weatherPrecipProb);
             break;
     }
@@ -3452,6 +3452,9 @@ void drawMsgEatAnimation()   // play the selected display-change animation
             for (uint8_t c = 0; c <= maxPosX; c++)
                 if ((int) c > x + 7)
                     drawSnapshotColumn(c);
+            for (int dotX = 4; dotX <= 30; dotX += 4)
+                if (x + 7 < dotX)
+                    setLedPixel(dotX, 4);
             drawPacmanSprite(x, f);
             break;
         }
