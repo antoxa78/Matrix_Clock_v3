@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.5.1"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.5.2"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -3463,9 +3463,9 @@ void drawMsgEatAnimation()   // play the selected display-change animation
             static const uint8_t ghost[5] = {
                 0b01110, 0b11111, 0b10101, 0b11111, 0b10101
             };
-            static const int8_t ghostX[4] = { 2, 10, 20, 30 };
-            static const int8_t ghostY[4] = { 0, 3, 0, 3 };
-            for (uint8_t i = 0; i < 4; i++)
+            static const int8_t ghostX[2] = { 10, 20 };
+            static const int8_t ghostY[2] = { 3, 0 };
+            for (uint8_t i = 0; i < 2; i++)
             {
                 if (x < ghostX[i])   // still ahead, not eaten yet
                 {
@@ -3479,9 +3479,8 @@ void drawMsgEatAnimation()   // play the selected display-change animation
             for (int dotX = 4; dotX <= 30; dotX += 4)
                 if (x + 4 < dotX)
                 {
-                    setLedPixel(dotX, 4);
-                    if (dotX == 28)   // power pellet
-                        setLedPixel(dotX, 3);
+                    setLedPixel(dotX, 2);   // top-lane dot
+                    setLedPixel(dotX, 5);   // bottom-lane dot
                 }
             drawPacmanSprite(x, y, f);
             break;
