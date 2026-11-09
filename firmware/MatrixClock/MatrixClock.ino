@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.6.0"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.6.1"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -890,7 +890,7 @@ bool webAuthOk()   // optional HTTP Basic auth: enabled only when a web password
 //**************************************************************************************************
 void startMsg(const char* text, uint8_t step = 2);   // forward decl, defined below
 void max7219_set_brightness(unsigned short br);
-void startMsgEatTransition(bool pending);
+void startMsgEatTransition(bool pending, uint8_t forcedType = 0xFF);
 bool displayHasPixels();
 void rtc_clearOsf();
 float rtc_temp();
@@ -1439,8 +1439,15 @@ void handleReset()
 void handleTestAnimation()
 {
     if (!webAuthOk()) { server.requestAuthentication(); return; }
+    uint8_t type = settings.displayTransition;
+    if (server.hasArg("type"))
+    {
+        int v = server.arg("type").toInt();
+        if (v >= 0 && v <= TRANSITION_RANDOM)
+            type = (uint8_t) v;
+    }
     if (!msgEatActive)
-        startMsgEatTransition(false);
+        startMsgEatTransition(false, type);
     server.keepAlive(false);
     server.send(200, "application/json", "{\"ok\":true}");
 }
@@ -3397,9 +3404,9 @@ void drawSnapshotRow(uint8_t y)
             setLedPixel(x, y);
 }
 
-uint8_t pickTransitionType()
+uint8_t pickTransitionType(uint8_t configured)
 {
-    uint8_t type = settings.displayTransition;
+    uint8_t type = configured;
     if (type > TRANSITION_RANDOM)
         type = TRANSITION_PACMAN;
     if (type == TRANSITION_RANDOM)
@@ -3432,10 +3439,11 @@ uint8_t pickTransitionType()
     return type;
 }
 
-void startMsgEatTransition(bool pending)
+void startMsgEatTransition(bool pending, uint8_t forcedType)
 {
     memcpy(msgEatSnapshot, LEDarr, sizeof(msgEatSnapshot));
-    transitionType = pickTransitionType();
+    uint8_t configured = (forcedType <= TRANSITION_RANDOM) ? forcedType : settings.displayTransition;
+    transitionType = pickTransitionType(configured);
     transitionSeed = (uint8_t) (rngNext() >> 24);
     transitionDir = (uint8_t) (rngNext() & 3);
     msgEatActive = true;
@@ -3543,32 +3551,38 @@ void drawMsgEatAnimation()   // play the selected display-change animation
         }
         case TRANSITION_TETRIS:
         {
-            for (int x = 8; x <= 22; x += 4)
+            // Well walls.
+            for (uint8_t y = 0; y < 8; y++)
+            {
+                setLedPixel(2, y);
+                setLedPixel(29, y);
+            }
+            // Stack, with a slightly uneven top.
+            for (int x = 4; x <= 24; x += 4)
             {
                 setLedPixel(x, 6); setLedPixel(x + 1, 6);
                 setLedPixel(x, 7); setLedPixel(x + 1, 7);
             }
-            static const uint8_t piece[2] = { 0b1110, 0b0110 };
+            for (uint8_t i = 0; i < 4; i++)
+            {
+                int bx = (i < 2) ? 4 + i * 4 : 20 + (i - 2) * 4;
+                setLedPixel(bx, 4); setLedPixel(bx + 1, 4);
+                setLedPixel(bx, 5); setLedPixel(bx + 1, 5);
+            }
+            // Falling T piece.
+            static const uint8_t piece[2] = { 0b1110, 0b0100 };
             int px = 14;
-            int py = (f * 4) / 50;
+            int py = (f * 5) / 48;
             if (py > 4) py = 4;
-            if (f < 50)
-            {
-                for (uint8_t row = 0; row < 2; row++)
-                    for (uint8_t col = 0; col < 4; col++)
-                        if (piece[row] & (0x8 >> col))
-                            setLedPixel(px + col, py + row);
-            }
-            else
-            {
-                for (uint8_t row = 0; row < 2; row++)
-                    for (uint8_t col = 0; col < 4; col++)
-                        if (piece[row] & (0x8 >> col))
-                            setLedPixel(px + col, 5 + row);
-                if (f >= 54)
-                    for (uint8_t x = 0; x <= maxPosX; x++)
-                        setLedPixel(x, 7);   // line clear
-            }
+            if (f >= 48) py = 5;   // landed on the stack
+            for (uint8_t row = 0; row < 2; row++)
+                for (uint8_t col = 0; col < 4; col++)
+                    if (piece[row] & (0x8 >> col))
+                        setLedPixel(px + col, py + row);
+            // Completed line flash.
+            if (f >= 52)
+                for (uint8_t x = 3; x <= 28; x++)
+                    setLedPixel(x, 7);
             break;
         }
         case TRANSITION_WIPE:
