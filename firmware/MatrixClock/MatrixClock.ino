@@ -33,7 +33,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.18"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.19"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -92,8 +92,8 @@ struct ClockSettings {
     uint8_t resyncMin;       // 0-59
     uint8_t dstRule;         // 0 = off, 1 = Israel, 2 = EU, 3 = US
     uint8_t colonAnim;       // colon animation: 0=solid, 1=blink 1Hz, 2=blink slow, 3=double flash, 4=alternate dots, 5=center out
-    uint8_t marquee;         // 0 = off, 1 = marquee border sweep
-    uint8_t pulse;           // 0 = off, 1 = brightness pulse
+    uint8_t marquee;         // legacy, keep for EEPROM layout
+    uint8_t pulse;           // legacy, keep for EEPROM layout
     uint16_t ntpInterval;    // periodic NTP sync interval in minutes, 0 = off
     uint8_t weather;         // 0 = off, 1 = on
     char weatherCity[40];    // city name for weather lookup
@@ -737,8 +737,6 @@ void settings_load()
     bool repaired = false;
     if (settings.colonAnim > 5) { settings.colonAnim = 0; repaired = true; }   // new fields: 0xFF from older firmware = off
     if (settings.orient == 0 || settings.orient > 2) { settings.orient = 1; repaired = true; }   // Auto removed: board has no orientation switch
-    settings.marquee = 0;   // effects removed from the settings menu, keep disabled
-    settings.pulse = 0;
     if (settings.ntpInterval > 720) { settings.ntpInterval = 0; repaired = true; }   // field added later / garbage from old EEPROM -> off
     if (settings.weather > 1) { settings.weather = 0; repaired = true; }   // new fields: 0xFF from older firmware = off
     if (settings.weatherInterval > 240 || settings.weatherInterval == 0) { settings.weatherInterval = 30; repaired = true; }
@@ -920,7 +918,7 @@ bool parseBirthdayDate(const String& s, uint8_t& day, uint8_t& month, uint16_t& 
 String birthdayDateStr(const BirthdayEntry& b)
 {
     if (b.day == 0 || b.month == 0) return "";
-    char s[12];
+    char s[16];
     if (b.year)
         snprintf(s, sizeof s, "%02u/%02u/%04u", b.day, b.month, b.year);
     else
@@ -1204,7 +1202,7 @@ void handleValues()
     if (!webAuthOk()) { server.requestAuthentication(); return; }
     server.keepAlive(false);
     String j;
-    j.reserve(7000);
+    j.reserve(5000);
     j = "{\"f\":[";
     j += "[\"SSID\",\"ssid\",null,\"" + jsonEsc(settings.ssid) + "\"],";
     j += "[\"WiFi Password\",\"pass\",null,\"\"],";   // never return the saved password; leave blank to keep it
@@ -1683,8 +1681,6 @@ void handleSave()
     settings.textFxFormat = 0xEFF5;
     if (server.hasArg("displayTransition")) settings.displayTransition = (uint8_t) constrain(server.arg("displayTransition").toInt(), 0, TRANSITION_RANDOM);
     settings.transitionFormat = 0xD158;
-    settings.marquee = 0;   // removed from settings menu, keep disabled
-    settings.pulse = 0;
     settings.resync = (uint8_t) (server.arg("resync").toInt() ? 1 : 0);
     settings.resyncHour = (uint8_t) constrain(server.arg("resyncHour").toInt(), 0, 23);
     settings.resyncMin = (uint8_t) constrain(server.arg("resyncMin").toInt(), 0, 59);
@@ -3217,6 +3213,7 @@ void clear_Display()   //clear all
     }
 }
 //*************************************Rotate 90 Degrees********************************************************************
+#ifdef ROTATE_90
 void rotate_90() // for Generic displays
 {
     for (uint8_t k = anzMAX; k > 0; k--) {
@@ -3235,6 +3232,7 @@ void rotate_90() // for Generic displays
         }
     }
 }
+#endif
 //*****************************Refresh Display*********************************************************************
 void refresh_display() //take info into LEDarr
 {
@@ -4531,7 +4529,7 @@ void setup() {
     Serial.printf("\r\nReset reason: %s\r\n", ESP.getResetReason().c_str());
     Serial.printf("Reset info: %s\r\n", ESP.getResetInfo().c_str());
     settings_load();              // load saved settings from EEPROM
-    Serial.printf("Settings loaded: SSID:%s PSW:%s NTP:%s TZ:%d BR:%d ORIENT:%d DST:%d COLON:%d DIGANIM:%d MARQ:%d PULSE:%d NTPINT:%d WEATHER:%d WCITY:%s WCITYSHOW:%d WINT:%d WSPEED:%d SDINT:%d RWARN:%d HWARN:%d RTHR:%d.%d HTHR:%d.%d WARNANIM:%d SHABBAT:%d SLEAD:%d SFREQ:%d SANIM:%d HOLIDAY:%d WPAUTH:%s\r\n", settings.ssid, passHidden(settings.pass), settings.ntpServer, settings.tzOffset, settings.brightness, settings.orient, settings.dstRule, settings.colonAnim, settings.digitAnim, settings.marquee, settings.pulse, settings.ntpInterval, settings.weather, settings.weatherCity, settings.weatherCityShow, settings.weatherInterval, settings.weatherSpeed, settings.scrollDateInt, settings.rainWarn, settings.heatWarn, settings.rainThresh10 / 10, settings.rainThresh10 % 10, settings.heatThresh10 / 10, settings.heatThresh10 % 10, settings.warnAnim, settings.shabbat, settings.shabbatLead, settings.shabbatFreq, settings.shabbatAnim, settings.holidayGreetings, settings.webPass[0] ? "set" : "none");
+    Serial.printf("Settings loaded: SSID:%s PSW:%s NTP:%s TZ:%d BR:%d ORIENT:%d DST:%d COLON:%d DIGANIM:%d NTPINT:%d WEATHER:%d WCITY:%s WCITYSHOW:%d WINT:%d WSPEED:%d SDINT:%d RWARN:%d HWARN:%d RTHR:%d.%d HTHR:%d.%d WARNANIM:%d SHABBAT:%d SLEAD:%d SFREQ:%d SANIM:%d HOLIDAY:%d WPAUTH:%s\r\n", settings.ssid, passHidden(settings.pass), settings.ntpServer, settings.tzOffset, settings.brightness, settings.orient, settings.dstRule, settings.colonAnim, settings.digitAnim, settings.ntpInterval, settings.weather, settings.weatherCity, settings.weatherCityShow, settings.weatherInterval, settings.weatherSpeed, settings.scrollDateInt, settings.rainWarn, settings.heatWarn, settings.rainThresh10 / 10, settings.rainThresh10 % 10, settings.heatThresh10 / 10, settings.heatThresh10 % 10, settings.warnAnim, settings.shabbat, settings.shabbatLead, settings.shabbatFreq, settings.shabbatAnim, settings.holidayGreetings, settings.webPass[0] ? "set" : "none");
     if (!settings.weather)
         Serial.println("Weather: disabled in settings");
     else if (strlen(settings.weatherCity) == 0)
@@ -5277,7 +5275,8 @@ void loop() {
                 drawColon(z_PosX - 10);
                 drawDigitCell(4, (uint8_t) std1, z_PosX - 4, false);   // hours ones
                 drawDigitCell(5, (uint8_t) std2, z_PosX + 1, false);   // hours tens
-                drawDate(d_PosX);
+                if (f_scroll_x)
+                    drawDate(d_PosX);   // the date is only visible while scrolling
             }
 
             refresh_display(); //alle 50ms
