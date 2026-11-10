@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.3"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.4"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -1730,11 +1730,11 @@ void handleUpdateUpload()
         }
         WiFiUDP::stopAll();                    // free the NTP socket/heap during the update
         WiFi.setSleepMode(WIFI_NONE_SLEEP);    // no modem sleep while streaming firmware
-        clear_Display();                       // blank the matrix, then show a live update message
+        clear_Display();                       // blank the matrix: keep the SPI bus quiet during flash writes
         msgQueueCount = 0;
         msgEatActive = false;
         alertAnimActive = false;
-        startMsgNow("UPDATING", 2, false);     // no transition: the matrix must not look frozen
+        showMsg = false;
         Serial.printf("OTA: receiving %s\r\n", upload.filename.c_str());
         if (upload.filename.length() == 0)
             snprintf(otaUploadError, sizeof otaUploadError, "No firmware file selected");
@@ -3364,6 +3364,13 @@ void setLedPixel(int x, int y)
     LEDarr[x >> 3][y] |= (1 << (x & 7));
 }
 
+void drawBlock2x2(int x, int y)   // one Tetris cell (2x2 pixels)
+{
+    for (uint8_t dy = 0; dy < 2; dy++)
+        for (uint8_t dx = 0; dx < 2; dx++)
+            setLedPixel(x + dx, y + dy);
+}
+
 static const uint8_t pacOpen[5] = {
     0b01110, 0b11100, 0b11100, 0b11100, 0b01110
 };
@@ -3574,37 +3581,49 @@ void drawMsgEatAnimation()   // play the selected display-change animation
         }
         case TRANSITION_TETRIS:
         {
-            bool clearLine = (f >= 56);
-            static const int8_t bottomBlocks[5] = { 4, 8, 12, 20, 24 };
-            static const int8_t upperBlocks[4] = { 4, 8, 20, 24 };
-            if (!clearLine)
+            // A jagged stack with a notch for the falling T piece. The T fills
+            // the bottom line, the line flashes and clears, then the stack drops.
+            static const uint16_t topMask    = 0x8821;   // isolated tops at blocks 0, 5, 11, 15
+            static const uint16_t stackMask  = 0xEE37;   // blocks 0,1,2, 4,5, 9,10,11, 13,14,15
+            static const uint16_t bottomMask = 0xFF7F;   // full bottom row except block 7
+            static const uint16_t tTopMask   = 0x01C0;   // T top row at blocks 6,7,8
+
+            if (f < 50)
             {
-                for (uint8_t i = 0; i < 5; i++)
+                for (uint8_t bx = 0; bx < 16; bx++)
                 {
-                    int bx = bottomBlocks[i];
-                    setLedPixel(bx, 6); setLedPixel(bx + 1, 6);
-                    setLedPixel(bx, 7); setLedPixel(bx + 1, 7);
+                    if (topMask & (1u << bx))    drawBlock2x2(bx * 2, 2);
+                    if (stackMask & (1u << bx))  drawBlock2x2(bx * 2, 4);
+                    if (bottomMask & (1u << bx)) drawBlock2x2(bx * 2, 6);
+                }
+
+                // T piece falls into the notch. It accelerates slightly, then rests
+                // with its top row at y=4 and its centre block at y=6.
+                int py = -2;
+                if (f <= 40)
+                    py = -2 + (int) (((uint32_t) f * f * 6UL) / (40UL * 40UL));
+                else
+                    py = 4;
+                if (py > 4) py = 4;
+                for (uint8_t bx = 0; bx < 3; bx++)
+                    drawBlock2x2(12 + bx * 2, py);
+                drawBlock2x2(14, py + 2);
+
+                // Completed bottom line flash.
+                if (f >= 42 && f < 50 && ((f / 2) & 1) == 0)
+                    for (uint8_t x = 0; x <= maxPosX; x++)
+                        setLedPixel(x, 7);
+            }
+            else
+            {
+                // Bottom line cleared: the rows above drop one block.
+                uint16_t newBottom = stackMask | tTopMask;
+                for (uint8_t bx = 0; bx < 16; bx++)
+                {
+                    if (topMask & (1u << bx))      drawBlock2x2(bx * 2, 4);
+                    if (newBottom & (1u << bx))    drawBlock2x2(bx * 2, 6);
                 }
             }
-            for (uint8_t i = 0; i < 4; i++)
-            {
-                int bx = upperBlocks[i];
-                setLedPixel(bx, 4); setLedPixel(bx + 1, 4);
-                setLedPixel(bx, 5); setLedPixel(bx + 1, 5);
-            }
-            // Falling T piece; it lands in the gap at x = 14..17.
-            static const uint8_t piece[2] = { 0b1110, 0b0100 };
-            int px = 14;
-            int py = (f * 5) / 48;
-            if (py > 4) py = 4;
-            if (f >= 48) py = 5;
-            for (uint8_t row = 0; row < 2; row++)
-                for (uint8_t col = 0; col < 4; col++)
-                    if (piece[row] & (0x8 >> col))
-                        setLedPixel(px + col, py + row);
-            if (f >= 52 && !clearLine)
-                for (uint8_t x = 3; x <= 28; x++)
-                    setLedPixel(x, 7);   // completed line flash
             break;
         }
         case TRANSITION_WIPE:
@@ -4653,7 +4672,7 @@ void loop() {
         } // end 1s
         if (f_tckr50ms == true) {// the following runs every 50ms to control scroll speed
             f_tckr50ms = false;
-            if (Update.isRunning() && otaRebootAt == 0 && !showMsg)
+            if (Update.isRunning() && otaRebootAt == 0)
                 continue;   // keep the display/SPI quiet while firmware is being written
             if (msgEatActive)   // a display-change transition is running
             {
@@ -4727,8 +4746,6 @@ void loop() {
                     }
                     if (otaRebootAt != 0 && otaUploadSuccess)
                         startMsgNow("UPDATE SUCCESSFUL", 2, false);   // keep showing it until the reboot
-                    else if (Update.isRunning())
-                        startMsgNow("UPDATING", 2, false);            // keep the upload message scrolling
                     else if (apActive && millis() < apMsgUntil)   // keep repeating the AP setup hint for 30 seconds
                         startMsg(apUpdateMode ? "AP UPDATE 192.168.4.1" : "SETUP MODE AP 192.168.4.1");
                 }
