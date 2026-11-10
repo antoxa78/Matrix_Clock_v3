@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.14"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.15"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -282,6 +282,8 @@ IPAddress timeServerIP;
 unsigned long ntpLastRttMs = 0;                     // last measured NTP round-trip time
 unsigned long ntpLastTransitMs = 0;                 // one-way correction applied to the server timestamp
 unsigned long ntpLastSyncMs = 0;                    // millis() of the last successful NTP sync
+unsigned long ntpRetryAt = 0;                       // millis() of the next automatic NTP retry
+uint8_t ntpRetryCount = 0;                          // failed retry attempts since the last success
 
 const unsigned char DS3231_ADDRESS = 0x68;
 const unsigned char secondREG = 0x00;
@@ -4412,6 +4414,8 @@ void setup() {
         {
             Serial.println("no time packet received");
             startNtpMessage(NULL);
+            ntpRetryAt = millis() + 30000UL;   // transient boot miss: retry without waiting for the daily resync
+            ntpRetryCount = 0;
         }
     }
 }
@@ -4784,11 +4788,34 @@ void loop() {
                     rtc_set(tt);
                     Serial.println("RTC resynced after WiFi reconnect");
                     startNtpMessage(tt);
+                    ntpRetryAt = 0;
+                    ntpRetryCount = 0;
                 }
                 else
                 {
                     Serial.println("no time packet received");
                     startNtpMessage(NULL);
+                    ntpRetryAt = millis() + 30000UL;
+                    ntpRetryCount = 0;
+                }
+            }
+            if (!apUpdateMode && ntpRetryAt != 0 && !otaBusy && WiFi.status() == WL_CONNECTED
+                && (long) (millis() - ntpRetryAt) >= 0)
+            {
+                ntpRetryAt = 0;
+                tm* tt = connectNTP();
+                if (tt != NULL)
+                {
+                    rtc_set(tt);
+                    startNtpMessage(tt);
+                    ntpRetryCount = 0;
+                }
+                else if (ntpRetryCount < 5)
+                {
+                    ntpRetryCount++;
+                    unsigned long retryDelay = 30000UL << (ntpRetryCount - 1);
+                    if (retryDelay > 300000UL) retryDelay = 300000UL;
+                    ntpRetryAt = millis() + retryDelay;
                 }
             }
             rtc2mez();
