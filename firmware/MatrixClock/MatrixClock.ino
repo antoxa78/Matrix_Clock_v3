@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.9"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.10"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -3463,6 +3463,19 @@ void drawSnapshotRow(uint8_t y)
             setLedPixel(x, y);
 }
 
+// Snake-game path: head positions for the 60 transition frames.
+static const uint8_t snakePath[61][2] = {
+    {2,4}, {3,4}, {4,4}, {5,4}, {6,4}, {7,4}, {8,4}, {9,4},
+    {10,4}, {11,4}, {12,4}, {12,3}, {12,2}, {12,1}, {13,1}, {14,1},
+    {15,1}, {16,1}, {17,1}, {18,1}, {19,1}, {20,1}, {21,1}, {22,1},
+    {23,1}, {24,1}, {24,2}, {24,3}, {24,4}, {24,5}, {24,6}, {23,6},
+    {22,6}, {21,6}, {20,6}, {19,6}, {18,6}, {17,6}, {16,6}, {15,6},
+    {14,6}, {13,6}, {12,6}, {11,6}, {10,6}, {9,6}, {8,6}, {7,6},
+    {6,6}, {6,5}, {6,4}, {6,3}, {7,3}, {8,3}, {9,3}, {10,3},
+    {11,3}, {12,3}, {13,3}, {14,3}, {15,3},
+};
+static const uint8_t snakeFoodStep[7] = { 6, 14, 22, 32, 42, 52, 58 };
+
 uint8_t pickTransitionType(uint8_t configured)
 {
     uint8_t type = configured;
@@ -3518,7 +3531,8 @@ void drawMsgEatAnimation()   // play the selected display-change animation
     uint8_t total = 40;
     if (transitionType == TRANSITION_PACMAN)
         total = PACMAN_FRAMES;
-    else if (transitionType >= TRANSITION_BREAKOUT && transitionType <= TRANSITION_TETRIS)
+    else if (transitionType == TRANSITION_SNAKE
+             || (transitionType >= TRANSITION_BREAKOUT && transitionType <= TRANSITION_TETRIS))
         total = GAME_FRAMES;
     uint16_t progress = (uint16_t) ((f * 256UL) / total);
 
@@ -3821,25 +3835,69 @@ void drawMsgEatAnimation()   // play the selected display-change animation
             break;
         case TRANSITION_SNAKE:
         {
-            int step = (int) f * 7;
+            uint8_t headIdx = (f > 60) ? 60 : f;
+            int headX = snakePath[headIdx][0];
+            int headY = snakePath[headIdx][1];
+
+            // Next food pellet ahead of the snake.
+            int foodStep = -1;
+            for (uint8_t i = 0; i < 7; i++)
+                if (snakeFoodStep[i] > f) { foodStep = snakeFoodStep[i]; break; }
+            int foodX = 0, foodY = 0;
+            if (foodStep >= 0)
+            {
+                foodX = snakePath[foodStep][0];
+                foodY = snakePath[foodStep][1];
+            }
+
+            // The old image dissolves while the snake moves; keep a clear
+            // 1-pixel margin around the food so the pellet stands out.
+            uint16_t progress = (f >= 40) ? 256 : (uint16_t) (((uint16_t) f * 256UL) / 40UL);
             for (uint8_t x = 0; x <= maxPosX; x++)
                 for (uint8_t y = 0; y < 8; y++)
                 {
-                    int row = y;
-                    int col = (row & 1) ? (31 - (int) x) : (int) x;
-                    int idx = row * 32 + col;
-                    if (idx > step && snapshotPixel(x, y))
+                    if (foodStep >= 0
+                        && (int) x >= foodX - 1 && (int) x <= foodX + 2
+                        && (int) y >= foodY - 1 && (int) y <= foodY + 2)
+                        continue;
+                    if (snapshotPixel(x, y) && (uint16_t) hash8(x, y, transitionSeed) >= progress)
                         setLedPixel(x, y);
                 }
-            if (step < 256)
-            {
-                int row = step / 32;
-                int col = step % 32;
-                int headX = (row & 1) ? (31 - col) : col;
+
+            // Blinking 2x2 food pellet.
+            if (foodStep >= 0 && ((f / 4) & 1) == 0)
                 for (uint8_t dy = 0; dy < 2; dy++)
                     for (uint8_t dx = 0; dx < 2; dx++)
-                        setLedPixel(headX + dx, row + dy);
+                        setLedPixel(foodX + dx, foodY + dy);
+
+            // The snake grows by two segments at every pellet.
+            uint8_t bodyLen = 3;
+            for (uint8_t i = 0; i < 7; i++)
+                if (snakeFoodStep[i] <= f) bodyLen += 2;
+
+            for (uint8_t i = 0; i < bodyLen; i++)
+            {
+                int idx = (int) f - (int) i;
+                int x, y;
+                if (idx >= 0)
+                {
+                    x = snakePath[idx][0];
+                    y = snakePath[idx][1];
+                }
+                else
+                {
+                    x = (int) snakePath[0][0] + idx;
+                    y = snakePath[0][1];
+                }
+                setLedPixel(x, y);
             }
+
+            // Short head extension in the direction of travel.
+            if (headIdx < 60)
+                setLedPixel(snakePath[headIdx + 1][0], snakePath[headIdx + 1][1]);
+            else if (headIdx > 0)
+                setLedPixel(headX + headX - (int) snakePath[headIdx - 1][0],
+                            headY + headY - (int) snakePath[headIdx - 1][1]);
             break;
         }
         case TRANSITION_BARN:
@@ -3861,6 +3919,7 @@ void drawMsgEatAnimation()   // play the selected display-change animation
     }
 
     if (transitionType == TRANSITION_PACMAN
+        || transitionType == TRANSITION_SNAKE
         || (transitionType >= TRANSITION_BREAKOUT && transitionType <= TRANSITION_TETRIS))
         msgEatFrame++;   // give the game animations their full duration
     else
