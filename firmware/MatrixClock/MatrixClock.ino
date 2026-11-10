@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.10"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.11"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -3778,10 +3778,11 @@ void drawMsgEatAnimation()   // play the selected display-change animation
             // Realistic rain: per-column heads fall at different speeds and
             // phases, leaving sparse droplet trails and washing the old image
             // away from the top down.
-            static const uint8_t trailOff[5] = { 1, 2, 4, 5, 7 };
+            static const uint8_t trailOff[3] = { 1, 2, 4 };
             for (uint8_t x = 0; x <= maxPosX; x++)
             {
                 uint8_t h = hash8(x, 0, transitionSeed);
+                if ((h & 3) == 0) continue;                    // fewer active columns: lighter rain
                 uint8_t speed = 16 + ((h >> 3) % 7);          // 16..22
                 int head = -3 - (int) (h % 5) + (int) ((f * (uint16_t) speed) / 40UL);
 
@@ -3790,18 +3791,18 @@ void drawMsgEatAnimation()   // play the selected display-change animation
                     if ((int) y >= head && snapshotPixel(x, y))
                         setLedPixel(x, y);
 
-                // Bright head + sparse trail (gaps make it read as rain).
+                // Bright head + short sparse trail.
                 if (head >= 0 && head < 8)
                     setLedPixel(x, head);
-                uint8_t trailLen = 2 + (h & 3);               // 2..5
+                uint8_t trailLen = 2 + (h & 1);               // 2..3
                 for (uint8_t t = 0; t < trailLen; t++)
                 {
                     int y = head - trailOff[t];
                     if (y >= 0 && y < 8) setLedPixel(x, y);
                 }
 
-                // Occasional small splash when a drop reaches the bottom.
-                if ((h & 7) == 0 && head >= 7 && head <= 9)
+                // Rare small splash when a drop reaches the bottom.
+                if ((h & 15) == 0 && head >= 7 && head <= 9)
                 {
                     if (x > 0) setLedPixel(x - 1, 7);
                     setLedPixel(x, 7);
@@ -3849,20 +3850,6 @@ void drawMsgEatAnimation()   // play the selected display-change animation
                 foodX = snakePath[foodStep][0];
                 foodY = snakePath[foodStep][1];
             }
-
-            // The old image dissolves while the snake moves; keep a clear
-            // 1-pixel margin around the food so the pellet stands out.
-            uint16_t progress = (f >= 40) ? 256 : (uint16_t) (((uint16_t) f * 256UL) / 40UL);
-            for (uint8_t x = 0; x <= maxPosX; x++)
-                for (uint8_t y = 0; y < 8; y++)
-                {
-                    if (foodStep >= 0
-                        && (int) x >= foodX - 1 && (int) x <= foodX + 2
-                        && (int) y >= foodY - 1 && (int) y <= foodY + 2)
-                        continue;
-                    if (snapshotPixel(x, y) && (uint16_t) hash8(x, y, transitionSeed) >= progress)
-                        setLedPixel(x, y);
-                }
 
             // Blinking 2x2 food pellet.
             if (foodStep >= 0 && ((f / 4) & 1) == 0)
