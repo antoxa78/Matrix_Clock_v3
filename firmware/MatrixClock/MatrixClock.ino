@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.11"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.12"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -3575,51 +3575,180 @@ void drawMsgEatAnimation()   // play the selected display-change animation
         }
         case TRANSITION_BREAKOUT:
         {
-            for (uint8_t i = 0; i < 8; i++)
+            // Simple Breakout game: 16 bricks, a bouncing 2x2 ball and a
+            // paddle that tracks the ball. Bricks disappear when hit.
+            static uint8_t ballX, ballY, paddleX;
+            static int8_t bdx, bdy;
+            static uint16_t bricks;
+
+            if (f == 0)
             {
-                int bx = 2 + i * 4;
-                if (i < 8 - (f / 8))
-                {
-                    setLedPixel(bx, 0); setLedPixel(bx + 1, 0);
-                    setLedPixel(bx, 1); setLedPixel(bx + 1, 1);
-                }
+                ballX = 15; ballY = 6;
+                bdx = 1; bdy = -1;
+                paddleX = 12;
+                bricks = 0xFFFF;
             }
-            int phase = f % 30;
-            int bx = 1 + (phase < 15 ? phase : 30 - phase) * 2;
-            if (bx > 29) bx = 29;
-            int py = f % 20;
-            int by = 1 + (py < 10 ? py / 2 : (20 - py) / 2);
-            int px = bx - 2;
-            if (px < 0) px = 0;
-            if (px > 26) px = 26;
-            for (uint8_t i = 0; i < 6; i++) setLedPixel(px + i, 7);
-            setLedPixel(bx, by); setLedPixel(bx + 1, by);
-            setLedPixel(bx, by + 1); setLedPixel(bx + 1, by + 1);
+            else
+            {
+                int prevY = ballY;
+                ballX += bdx;
+                ballY += bdy;
+
+                if (ballX < 0)  { ballX = 0;  bdx = -bdx; }
+                if (ballX > 30) { ballX = 30; bdx = -bdx; }
+                if (ballY < 0)  { ballY = 0;  bdy = -bdy; }
+
+                for (uint8_t i = 0; i < 16; i++)
+                {
+                    if (!(bricks & (1u << i))) continue;
+                    int bx = 2 + (i & 7) * 4;
+                    int by = (i < 8) ? 0 : 2;
+                    if (ballX < bx + 2 && ballX + 2 > bx
+                        && ballY < by + 2 && ballY + 2 > by)
+                    {
+                        bricks &= ~(1u << i);
+                        bdy = -bdy;
+                        ballY = prevY;   // stay outside the removed brick
+                        break;
+                    }
+                }
+
+                if (bdy > 0 && ballY >= 6
+                    && ballX + 2 > paddleX && ballX < paddleX + 8)
+                {
+                    ballY = 6;
+                    bdy = -1;
+                    int hit = (int) ballX + 1 - ((int) paddleX + 4);
+                    if (hit < 0) bdx = -1;
+                    else if (hit > 0) bdx = 1;
+                }
+
+                if (ballY > 7)   // missed: serve again from the paddle
+                {
+                    ballX = paddleX + 3;
+                    ballY = 6;
+                    bdx = 1;
+                    bdy = -1;
+                }
+
+                int target = (int) ballX - 3;
+                if (target < 0) target = 0;
+                if (target > 24) target = 24;
+                int p = paddleX;
+                if (p < target)      p = (p + 2 > target) ? target : p + 2;
+                else if (p > target) p = (p - 2 < target) ? target : p - 2;
+                paddleX = (uint8_t) p;
+            }
+
+            for (uint8_t i = 0; i < 16; i++)
+            {
+                if (!(bricks & (1u << i))) continue;
+                int bx = 2 + (i & 7) * 4;
+                int by = (i < 8) ? 0 : 2;
+                drawBlock2x2(bx, by);
+            }
+            drawBlock2x2(ballX, ballY);
+            for (uint8_t i = 0; i < 8; i++)
+                setLedPixel((int) paddleX + i, 7);
             break;
         }
         case TRANSITION_SPACE:
         {
+            // Space Invaders: five aliens, a sweeping ship and real bullets.
+            // A bullet that reaches an alien removes it and shows a short burst.
             static const uint8_t alien[3] = {
                 0b01110, 0b10101, 0b11111
             };
-            int shift = (f / 8) & 1;
-            for (uint8_t i = 0; i < 3; i++)
+            static const uint8_t invX[5] = { 1, 7, 13, 19, 25 };
+            static uint8_t alive, cooldown;
+            static int shipX;
+            static int8_t shipDir;
+            static bool bulletActive;
+            static int bulletX;
+            static uint8_t bulletY;
+            static uint8_t explTimer;
+            static int explX;
+            static uint8_t explY;
+
+            if (f == 0)
             {
-                if (f < 20 + i * 15)
-                {
-                    int ax = 4 + i * 9 + shift;
-                    for (uint8_t row = 0; row < 3; row++)
-                        for (uint8_t col = 0; col < 5; col++)
-                            if (alien[row] & (0x10 >> col))
-                                setLedPixel(ax + col, 1 + row);
-                }
+                alive = 0x1F;
+                shipX = 0;
+                shipDir = 1;
+                cooldown = 0;
+                bulletActive = false;
+                explTimer = 0;
             }
-            int sx = 9 + ((f / 6) % 12);
-            for (uint8_t i = 0; i < 5; i++) setLedPixel(sx + i, 7);
-            int by = 6 - (f % 6);
-            int bx = sx + 2;
-            setLedPixel(bx, by);
-            setLedPixel(bx, by + 1);
+            else
+            {
+                shipX += shipDir;
+                if (shipX >= 27) { shipX = 27; shipDir = -1; }
+                if (shipX <= 0)  { shipX = 0; shipDir = 1; }
+
+                if (bulletActive)
+                {
+                    if (bulletY > 0) bulletY--;
+                    else bulletActive = false;
+
+                    if (bulletActive && bulletY <= 3)
+                    {
+                        for (uint8_t i = 0; i < 5; i++)
+                        {
+                            if (!(alive & (1u << i))) continue;
+                            if (bulletX >= invX[i] && bulletX <= invX[i] + 4)
+                            {
+                                alive &= ~(1u << i);
+                                explTimer = 3;
+                                explX = invX[i] + 2;
+                                explY = 2;
+                                bulletActive = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (cooldown > 0) cooldown--;
+                if (!bulletActive && cooldown == 0)
+                {
+                    for (uint8_t i = 0; i < 5; i++)
+                    {
+                        if (!(alive & (1u << i))) continue;
+                        if (abs(shipX - (int) invX[i]) <= 2)
+                        {
+                            bulletActive = true;
+                            bulletX = shipX + 2;
+                            bulletY = 6;
+                            cooldown = 14;
+                            break;
+                        }
+                    }
+                }
+                if (explTimer > 0) explTimer--;
+            }
+
+            for (uint8_t i = 0; i < 5; i++)
+            {
+                if (!(alive & (1u << i))) continue;
+                for (uint8_t row = 0; row < 3; row++)
+                    for (uint8_t col = 0; col < 5; col++)
+                        if (alien[row] & (0x10 >> col))
+                            setLedPixel(invX[i] + col, 1 + row);
+            }
+            for (uint8_t i = 0; i < 5; i++)
+                setLedPixel((int) shipX + i, 7);
+            if (bulletActive)
+            {
+                setLedPixel(bulletX, bulletY);
+                if (bulletY + 1 < 8) setLedPixel(bulletX, bulletY + 1);
+            }
+            if (explTimer > 0)
+            {
+                for (int8_t dx = -1; dx <= 1; dx++)
+                    setLedPixel((int) explX + dx, explY);
+                setLedPixel(explX, explY - 1);
+                setLedPixel(explX, explY + 1);
+            }
             break;
         }
         case TRANSITION_TETRIS:
