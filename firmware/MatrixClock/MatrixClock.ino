@@ -33,7 +33,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.17"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.18"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -1075,16 +1075,16 @@ void startMsg(const char* text, uint8_t step)   // scroll a message; queue up to
     msgQueueCount++;
 }
 //**************************************************************************************************
-void startNtpMessage(tm* tt)   // show the server, the ping correction and the synced time
+void startNtpMessage(tm* tt)   // show the ping correction and the synced time
 {
     if (tt == NULL)
     {
         startMsg("NTP SYNC FAILED");
         return;
     }
-    char b[140];
-    snprintf(b, sizeof b, "NTP OK!! %s PING %luMS ADJ %luMS %02d:%02d",
-             settings.ntpServer, ntpLastRttMs, ntpLastTransitMs, tt->tm_hour, tt->tm_min);
+    char b[80];
+    snprintf(b, sizeof b, "NTP OK!! PING %luMS ADJ %luMS %02d:%02d",
+             ntpLastRttMs, ntpLastTransitMs, tt->tm_hour, tt->tm_min);
     startMsg(b);
 }
 //**************************************************************************************************
