@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.2"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.3"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -955,15 +955,19 @@ void enterAPUpdateMode()   // switch to the setup AP so a weak router link can't
     Serial.printf("AP update mode: IP=%s\r\n", WiFi.softAPIP().toString().c_str());
 }
 //**************************************************************************************************
-void startMsgNow(const char* text, uint8_t step)
+void startMsgNow(const char* text, uint8_t step, bool useTransition = true)
 {
     strncpy(msg, text, sizeof(msg) - 1);
     msg[sizeof(msg) - 1] = 0;
     msgStep = step;
-    if (settings.displayTransition != TRANSITION_OFF && displayHasPixels())
+    if (useTransition && settings.displayTransition != TRANSITION_OFF && displayHasPixels())
         startMsgEatTransition(true);
     else
+    {
+        msgEatActive = false;
+        msgEatPending = false;
         showMsg = true;
+    }
     max7219_set_brightness(settings.brightness);
     z_PosX = 0;
     d_PosX = -8;
@@ -1726,7 +1730,11 @@ void handleUpdateUpload()
         }
         WiFiUDP::stopAll();                    // free the NTP socket/heap during the update
         WiFi.setSleepMode(WIFI_NONE_SLEEP);    // no modem sleep while streaming firmware
-        clear_Display();                       // blank the matrix: lower current during flash writes
+        clear_Display();                       // blank the matrix, then show a live update message
+        msgQueueCount = 0;
+        msgEatActive = false;
+        alertAnimActive = false;
+        startMsgNow("UPDATING", 2, false);     // no transition: the matrix must not look frozen
         Serial.printf("OTA: receiving %s\r\n", upload.filename.c_str());
         if (upload.filename.length() == 0)
             snprintf(otaUploadError, sizeof otaUploadError, "No firmware file selected");
@@ -1792,8 +1800,13 @@ void handleUpdateDone()
     if (otaUploadSuccess)
     {
         Serial.println("OTA: success, rebooting");
-        startMsg("UPDATE SUCCESSFUL");
-        otaRebootAt = millis() + 7000UL;
+        // Show the result immediately: drop any queued/current message or transition
+        // (in AP mode the "AP UPDATE" hint is usually still scrolling).
+        msgQueueCount = 0;
+        alertAnimActive = false;
+        apMsgUntil = 0;
+        startMsgNow("UPDATE SUCCESSFUL", 2, false);
+        otaRebootAt = millis() + 8000UL;
         server.keepAlive(false);
         server.send(200, "application/json",
                     "{\"ok\":true,\"msg\":\"Firmware updated successfully. Rebooting...\"}");
@@ -1807,7 +1820,10 @@ void handleUpdateDone()
         if (otaUploadError[0] == 0)
             snprintf(otaUploadError, sizeof otaUploadError, "Update failed");
         Serial.printf("OTA: failed: %s\r\n", otaUploadError);
-        startMsg("UPDATE FAIL");
+        msgQueueCount = 0;
+        alertAnimActive = false;
+        apMsgUntil = 0;
+        startMsgNow("UPDATE FAIL", 2, false);
         String j = "{\"ok\":false,\"msg\":\"";
         j += jsonEsc(otaUploadError);
         j += "\"}";
@@ -1952,20 +1968,20 @@ void buildWeatherDetail(char* out, size_t outSize, uint8_t page)
             else strcpy(hi, "--");
             if (weatherLowValid) snprintf(lo, sizeof lo, "%.1f ~C", weatherLowC);
             else strcpy(lo, "--");
-            snprintf(out, outSize, "TODAY HIGH TEMP: %s  LOW TEMP: %s", hi, lo);
+            snprintf(out, outSize, "TODAY HIGH TEMP: %s ; LOW TEMP: %s", hi, lo);
             break;
         }
         case 1:
-            snprintf(out, outSize, "SUNRISE: %s  SUNSET: %s",
+            snprintf(out, outSize, "SUNRISE: %s ; SUNSET: %s",
                      weatherSunrise[0] ? weatherSunrise : "--:--",
                      weatherSunset[0] ? weatherSunset : "--:--");
             break;
         case 2:
-            snprintf(out, outSize, "WIND NOW: %.0f KM/H %s  UV MAX: %.0f",
+            snprintf(out, outSize, "WIND NOW: %.0f KM/H %s ; UV MAX: %.0f",
                      weatherWindKmh, windDirName(weatherWindDir), weatherUv);
             break;
         case 3:
-            snprintf(out, outSize, "PRESSURE: %.0f HPA  TODAY RAIN CHANCE: %d%%",
+            snprintf(out, outSize, "PRESSURE: %.0f HPA ; TODAY RAIN CHANCE: %d%%",
                      weatherPressureHpa, weatherDailyProb);
             break;
         default:
@@ -4637,7 +4653,7 @@ void loop() {
         } // end 1s
         if (f_tckr50ms == true) {// the following runs every 50ms to control scroll speed
             f_tckr50ms = false;
-            if (Update.isRunning() && otaRebootAt == 0)
+            if (Update.isRunning() && otaRebootAt == 0 && !showMsg)
                 continue;   // keep the display/SPI quiet while firmware is being written
             if (msgEatActive)   // a display-change transition is running
             {
@@ -4709,7 +4725,11 @@ void loop() {
                         weatherAlertMsgActive = false;
                         weatherAlertActive = false;
                     }
-                    if (apActive && millis() < apMsgUntil)   // keep repeating the AP setup hint for 30 seconds
+                    if (otaRebootAt != 0 && otaUploadSuccess)
+                        startMsgNow("UPDATE SUCCESSFUL", 2, false);   // keep showing it until the reboot
+                    else if (Update.isRunning())
+                        startMsgNow("UPDATING", 2, false);            // keep the upload message scrolling
+                    else if (apActive && millis() < apMsgUntil)   // keep repeating the AP setup hint for 30 seconds
                         startMsg(apUpdateMode ? "AP UPDATE 192.168.4.1" : "SETUP MODE AP 192.168.4.1");
                 }
             }
