@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.8"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.9"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -3760,21 +3760,42 @@ void drawMsgEatAnimation()   // play the selected display-change animation
             }
             break;
         case TRANSITION_MATRIX:
+        {
+            // Realistic rain: per-column heads fall at different speeds and
+            // phases, leaving sparse droplet trails and washing the old image
+            // away from the top down.
+            static const uint8_t trailOff[5] = { 1, 2, 4, 5, 7 };
             for (uint8_t x = 0; x <= maxPosX; x++)
             {
-                uint8_t speed = 1 + ((x * 5 + transitionSeed) % 3);
-                int head = (int) ((f * (2 + speed)) / 5);
+                uint8_t h = hash8(x, 0, transitionSeed);
+                uint8_t speed = 16 + ((h >> 3) % 7);          // 16..22
+                int head = -3 - (int) (h % 5) + (int) ((f * (uint16_t) speed) / 40UL);
+
+                // Old image remains below the falling head.
                 for (uint8_t y = 0; y < 8; y++)
                     if ((int) y >= head && snapshotPixel(x, y))
                         setLedPixel(x, y);
+
+                // Bright head + sparse trail (gaps make it read as rain).
                 if (head >= 0 && head < 8)
-                {
                     setLedPixel(x, head);
-                    if (head + 1 < 8) setLedPixel(x, head + 1);
-                    if (head > 0) setLedPixel(x, head - 1);
+                uint8_t trailLen = 2 + (h & 3);               // 2..5
+                for (uint8_t t = 0; t < trailLen; t++)
+                {
+                    int y = head - trailOff[t];
+                    if (y >= 0 && y < 8) setLedPixel(x, y);
+                }
+
+                // Occasional small splash when a drop reaches the bottom.
+                if ((h & 7) == 0 && head >= 7 && head <= 9)
+                {
+                    if (x > 0) setLedPixel(x - 1, 7);
+                    setLedPixel(x, 7);
+                    if (x < (int) maxPosX) setLedPixel(x + 1, 7);
                 }
             }
             break;
+        }
         case TRANSITION_SLIDE:
         {
             int dx = 0, dy = 0;
