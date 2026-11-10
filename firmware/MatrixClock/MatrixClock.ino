@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.13"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.14"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -3948,16 +3948,30 @@ void drawMsgEatAnimation()   // play the selected display-change animation
         }
         case TRANSITION_BARN:
         {
-            int close = (int) ((f * 17UL) / 40UL);
+            // Centre the closing door seam on the main HH:MM digits.
+            // z_PosX is the clock layout position; that digit block is
+            // centred at z_PosX - 11.
+            int cx = (int) z_PosX - 11;
+            if (cx < 8 || cx > 24) cx = 16;
+            int half = (cx > 16) ? cx : (32 - cx);
+            int close = (int) ((f * (uint16_t) half) / 40UL);
+            int left = cx - half + close;
+            int right = cx + half - close;
+
             for (uint8_t x = 0; x <= maxPosX; x++)
-                if ((int) x >= close && (int) x < 32 - close)
+                if ((int) x >= left && (int) x < right)
                     drawSnapshotColumn(x);
-            if (close > 0 && close < 16)
+
+            if (close > 0 && close < half)
+            {
                 for (uint8_t y = 0; y < 8; y++)
                 {
-                    setLedPixel(close - 1, y);
-                    setLedPixel(32 - close, y);
+                    if (left - 1 >= 0 && left - 1 <= (int) maxPosX)
+                        setLedPixel(left - 1, y);
+                    if (right >= 0 && right <= (int) maxPosX)
+                        setLedPixel(right, y);
                 }
+            }
             break;
         }
         default:
