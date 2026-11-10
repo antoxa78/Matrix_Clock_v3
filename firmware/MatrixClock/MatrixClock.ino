@@ -25,6 +25,7 @@
 #include <EEPROM.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPClient.h>
+#include <stdarg.h>
 #include "WebPage.h"
 
 #define SDA        5      // Pin sda (I2C)
@@ -32,7 +33,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.15"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.16"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -132,9 +133,11 @@ struct ClockSettings {
     uint16_t dateSpeedFormat; // 0xDA7E when the dateSpeed field is valid
     uint8_t displayTransition; // 0=off, 1=Pac-Man, 2..11 animations, 12=random order
     uint16_t transitionFormat; // 0xD158 when the displayTransition field is valid
+    char apPass[64];          // password for the MatrixClock-Setup AP
+    uint16_t apPassFormat;    // 0xAB12 when apPass is valid
 };
-ClockSettings settings = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF5, 2, 0xDA7E, 1, 0xD158 };
-const ClockSettings settings_defaults = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF5, 2, 0xDA7E, 1, 0xD158 };
+ClockSettings settings = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF5, 2, 0xDA7E, 1, 0xD158, "12345678", 0xAB12 };
+const ClockSettings settings_defaults = { 0xA5A5A5A5, "", "", "il.pool.ntp.org", 2, 3, 1, 1, 0, 1, 0, 20, 0, 0, 0, 0, 0, 1, "", 30, 0, 0, 2, 1, 1, 1, 2, 31, 1, 1, 1, 1, 60, "", 10, 1, 1, 20, 310, 0xA55A, 1, 60, 1, {}, 0xB17D, 0, 0xB17E, 1, 0xDE7A, 0, 0xEFF5, 2, 0xDA7E, 1, 0xD158, "12345678", 0xAB12 };
 bool rtcInitialized = false;
 bool apActive = false;              // AP fallback mode active (settings page accessible)
 bool apShutdownPending = false;     // stopAP ran; softAP shutdown deferred to a quieter moment
@@ -284,6 +287,40 @@ unsigned long ntpLastTransitMs = 0;                 // one-way correction applie
 unsigned long ntpLastSyncMs = 0;                    // millis() of the last successful NTP sync
 unsigned long ntpRetryAt = 0;                       // millis() of the next automatic NTP retry
 uint8_t ntpRetryCount = 0;                          // failed retry attempts since the last success
+
+#define LOG_LINES 16
+#define LOG_CHARS 96
+struct LogEntry {
+    unsigned long ms;
+    char text[LOG_CHARS];
+};
+LogEntry logRing[LOG_LINES];
+uint8_t logHead = 0;
+uint8_t logCount = 0;
+volatile unsigned long loopHeartbeatMs = 0;
+volatile bool otaUploadInProgress = false;
+uint32_t heapMin = 0xFFFFFFFF;
+uint16_t wifiReconnectCount = 0;
+char lastNtpError[64] = "";
+char lastWeatherError[64] = "";
+unsigned long displayTestStart = 0;
+unsigned long displayTestUntil = 0;
+
+void logLine(const char* fmt, ...)
+{
+    char buf[LOG_CHARS];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    Serial.println(buf);
+    LogEntry &e = logRing[logHead];
+    e.ms = millis();
+    strncpy(e.text, buf, sizeof e.text - 1);
+    e.text[sizeof e.text - 1] = 0;
+    logHead = (uint8_t) ((logHead + 1) % LOG_LINES);
+    if (logCount < LOG_LINES) logCount++;
+}
 
 const unsigned char DS3231_ADDRESS = 0x68;
 const unsigned char secondREG = 0x00;
@@ -808,6 +845,20 @@ void settings_load()
         settings.displayTransition = TRANSITION_SPACE;   // Breakout was removed
         repaired = true;
     }
+    if (settings.apPassFormat != 0xAB12)
+    {
+        strncpy(settings.apPass, "12345678", sizeof(settings.apPass) - 1);
+        settings.apPass[sizeof(settings.apPass) - 1] = 0;
+        settings.apPassFormat = 0xAB12;
+        repaired = true;
+    }
+    settings.apPass[sizeof(settings.apPass) - 1] = 0;
+    if (strlen(settings.apPass) < 8)
+    {
+        strncpy(settings.apPass, "12345678", sizeof(settings.apPass) - 1);
+        settings.apPass[sizeof(settings.apPass) - 1] = 0;
+        repaired = true;
+    }
     if (settings.holidayFreq != 0 && settings.holidayFreq != 15 && settings.holidayFreq != 30
         && settings.holidayFreq != 60 && settings.holidayFreq != 120 && settings.holidayFreq != 240)
     { settings.holidayFreq = 0; repaired = true; }
@@ -914,11 +965,12 @@ void startAP()   // start fallback AP so the settings page stays reachable witho
     WiFi.mode(WIFI_OFF);            // clean radio state (also clears any SmartConfig session)
     delay(300);
     WiFi.mode(WIFI_AP_STA);         // keep the station interface available for WiFi scanning
-    bool ok = WiFi.softAP("MatrixClock-Setup", "12345678");
+    const char* apPass = (strlen(settings.apPass) >= 8) ? settings.apPass : "12345678";
+    bool ok = WiFi.softAP("MatrixClock-Setup", apPass);
     if (!ok)
     {
         delay(400);
-        ok = WiFi.softAP("MatrixClock-Setup", "12345678");
+        ok = WiFi.softAP("MatrixClock-Setup", apPass);
     }
     if (!ok)
     {
@@ -929,8 +981,8 @@ void startAP()   // start fallback AP so the settings page stays reachable witho
     apActive = true;
     apMsgUntil = millis() + 30000UL;   // keep showing the setup hint for 30 seconds
     startMsg("SETUP MODE AP 192.168.4.1");
-    Serial.printf("AP started: MatrixClock-Setup / password 12345678 / http://%s\r\n",
-                  WiFi.softAPIP().toString().c_str());
+    logLine("AP started: MatrixClock-Setup / http://%s",
+            WiFi.softAPIP().toString().c_str());
 }
 //**************************************************************************************************
 void stopAP()    // stop fallback AP once the router connection works again
@@ -943,7 +995,7 @@ void stopAP()    // stop fallback AP once the router connection works again
     // right after "WiFi connected" with no "AP stopped" printed).
     apShutdownPending = true;
     apShutdownSince = millis();
-    Serial.println("AP stop scheduled");
+    logLine("AP stop scheduled");
 }
 //**************************************************************************************************
 void enterAPUpdateMode()   // switch to the setup AP so a weak router link can't break the upload
@@ -962,7 +1014,7 @@ void enterAPUpdateMode()   // switch to the setup AP so a weak router link can't
     server.close();
     server.begin();   // rebind the web server to the AP interface
     startMsg("AP UPDATE 192.168.4.1");
-    Serial.printf("AP update mode: IP=%s\r\n", WiFi.softAPIP().toString().c_str());
+    logLine("AP update mode: IP=%s", WiFi.softAPIP().toString().c_str());
 }
 //**************************************************************************************************
 void startMsgNow(const char* text, uint8_t step, bool useTransition = true)
@@ -1157,6 +1209,7 @@ void handleValues()
     j += "[\"SSID\",\"ssid\",null,\"" + jsonEsc(settings.ssid) + "\"],";
     j += "[\"WiFi Password\",\"pass\",null,\"\"],";   // never return the saved password; leave blank to keep it
     j += "[\"Web Login Password\",\"webPass\",null,\"" + String(settings.webPass[0] ? "********" : "") + "\"],";
+    j += "[\"Setup AP Password\",\"apPass\",null,\"\"] ,";
     j += "[\"NTP Server\",\"ntp\",null,\"" + jsonEsc(settings.ntpServer) + "\"],";
     j += "[\"Time Zone\",\"tz\",null,\"" + String(settings.tzOffset) + "\"],";
     j += "[\"Daylight Saving Time\",\"dst\",[[\"0\",\"Off\"],[\"1\",\"IL\"],[\"2\",\"EU\"],[\"3\",\"US\"]],\"" + String(settings.dstRule) + "\"],";
@@ -1259,22 +1312,22 @@ void handleWeatherPage()
     unsigned long age = dataForCity ? (millis() - weatherUpdatedMs) / 1000UL : 0;
 
     String page;
-    page.reserve(4200);
+    page.reserve(5000);
     page += "<!DOCTYPE html><html><head><meta charset=utf-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             "<meta name=theme-color content='#0a0d0b'>"
             "<meta http-equiv=refresh content=30>"
-            "<title>MatrixClock Weather</title><style>"
+            "<title>MatrixClock Details</title><style>"
             ":root{--bg:#0a0d0b;--panel:#121614;--line:#232a26;--accent:#22e07a;--text:#e8f0ec;--sub:#7c8c84}"
             "*{box-sizing:border-box}body{margin:0;background:radial-gradient(900px 420px at 50% -10%,#10241a 0,var(--bg) 62%);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;min-height:100vh;padding:22px 16px}"
-            ".wrap{max-width:440px;margin:0 auto}h1{font-size:20px;text-align:center;margin:4px 0 6px;color:var(--accent)}"
+            ".wrap{max-width:440px;margin:0 auto}h1{font-size:20px;text-align:center;margin:4px 0 6px;color:var(--accent)}h2{font-size:16px;text-align:center;margin:20px 0 8px;color:var(--accent);font-weight:600}"
             ".city{text-align:center;color:var(--sub);font-size:13px;margin:0 0 18px}"
             "table{width:100%;border-collapse:collapse;background:linear-gradient(180deg,#171c19,#121614);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,.18)}"
             "td{padding:12px 14px;border-bottom:1px solid var(--line);font-size:14px}tr:last-child td{border-bottom:none}"
             "td:first-child{color:var(--sub)}td:last-child{text-align:right;font-weight:600}"
             ".yes{color:var(--accent)}.no{color:var(--sub)}.warn{color:#e05252}.ok{color:var(--accent)}.big{font-size:16px}"
             ".note{font-size:12px;line-height:1.6;color:var(--sub);margin:16px 0}.note a{color:var(--accent);text-decoration:none}"
-            "</style></head><body><div class=wrap><h1>Rain / Weather</h1><div class=city>";
+            "</style></head><body><div class=wrap><h1>Clock Details</h1><h2>Rain / Weather</h2><div class=city>";
     page += settings.weatherCity[0] ? settings.weatherCity : "No weather city configured";
     page += "</div><table>";
     if (settings.weatherCity[0] == 0)
@@ -1339,7 +1392,25 @@ void handleWeatherPage()
         page += "</td></tr>";
     }
     page += "</table>";
-    page += "<h1>NTP</h1><table>";
+    page += "<div class=note>";
+    if (settings.weather || settings.rainWarn || settings.heatWarn)
+    {
+        page += "The clock checks every ";
+        page += String(settings.weatherInterval);
+        page += " min. A rain warning is triggered by the current rain rate, by "
+                "forecast amount with probability (0.3 mm in the next hour or 0.6 mm "
+                "in the next two hours at 60%+ chance), or by a rain weather code. "
+                "A warning stays active through one dry check. Data older than three "
+                "checks (minimum 45 min) is stale and ignored. This page refreshes "
+                "every 30 seconds.<br><br>"
+                "Open-Meteo data is model forecast output, not a local rain gauge. "
+                "Outside central Europe and North America the 15-minute values are "
+                "interpolated from hourly model data.";
+        if (!settings.weather && (settings.rainWarn || settings.heatWarn))
+            page += "<br><br>Weather messages are off, but warnings are still checked.";
+    }
+    page += "</div>";
+    page += "<h2>NTP</h2><table>";
     page += "<tr><td>Server</td><td>";
     page += settings.ntpServer[0] ? settings.ntpServer : "not set";
     page += "</td></tr>";
@@ -1357,24 +1428,57 @@ void handleWeatherPage()
     }
     else
         page += "<tr><td>Status</td><td class=no>Waiting for first sync</td></tr>";
-    page += "</table><div class=note>";
-    if (settings.weather || settings.rainWarn || settings.heatWarn)
+    page += "<tr><td>Failed retries</td><td>";
+    page += String(ntpRetryCount);
+    page += "</td></tr>";
+    if (ntpRetryAt != 0)
     {
-        page += "The clock checks every ";
-        page += String(settings.weatherInterval);
-        page += " min. A rain warning is triggered by the current rain rate, by "
-                "forecast amount with probability (0.3 mm in the next hour or 0.6 mm "
-                "in the next two hours at 60%+ chance), or by a rain weather code. "
-                "A warning stays active through one dry check. Data older than three "
-                "checks (minimum 45 min) is stale and ignored. This page refreshes "
-                "every 30 seconds.<br><br>"
-                "Open-Meteo data is model forecast output, not a local rain gauge. "
-                "Outside central Europe and North America the 15-minute values are "
-                "interpolated from hourly model data.";
-        if (!settings.weather && (settings.rainWarn || settings.heatWarn))
-            page += "<br><br>Weather messages are off, but warnings are still checked.";
+        long remain = (long) (ntpRetryAt - millis()) / 1000;
+        if (remain < 0) remain = 0;
+        page += "<tr><td>Next retry</td><td>";
+        page += String(remain);
+        page += " s</td></tr>";
     }
-    page += "<a href='/'>Back to settings</a></div></div></body></html>";
+    page += "</table>";
+
+    page += "<h2>System</h2><table>";
+    page += "<tr><td>Firmware</td><td>" FIRMWARE_VERSION "</td></tr>";
+    char sysRow[80];
+    unsigned long up = millis() / 1000UL;
+    snprintf(sysRow, sizeof sysRow, "%lud %02lu:%02lu:%02lu",
+             up / 86400UL, (up / 3600UL) % 24UL, (up / 60UL) % 60UL, up % 60UL);
+    page += "<tr><td>Uptime</td><td>";
+    page += sysRow;
+    page += "</td></tr>";
+    page += "<tr><td>Free heap / minimum</td><td>";
+    page += String(ESP.getFreeHeap());
+    page += " / ";
+    page += String(heapMin == 0xFFFFFFFF ? ESP.getFreeHeap() : heapMin);
+    page += " B</td></tr>";
+    page += "<tr><td>WiFi RSSI / reconnects</td><td>";
+    page += String(WiFi.RSSI());
+    page += " dBm / ";
+    page += String(wifiReconnectCount);
+    page += "</td></tr>";
+    page += "<tr><td>Reset reason</td><td>";
+    page += ESP.getResetReason();
+    page += "</td></tr>";
+    page += "<tr><td>RTC temperature</td><td>";
+    page += String(rtc_temp(), 1);
+    page += " &deg;C</td></tr>";
+    page += "<tr><td>RTC status</td><td>";
+    page += (rtc_osf() ? "LOST TIME" : "OK");
+    page += "</td></tr>";
+    page += "<tr><td>RTC aging offset</td><td>";
+    page += String(rtc_aging());
+    page += "</td></tr>";
+    page += "<tr><td>Last NTP error</td><td>";
+    page += (lastNtpError[0] ? lastNtpError : "none");
+    page += "</td></tr>";
+    page += "<tr><td>Last weather error</td><td>";
+    page += (lastWeatherError[0] ? lastWeatherError : "none");
+    page += "</td></tr>";
+    page += "</table><div class=note><a href='/'>Back to settings</a></div></div></body></html>";
     sendChunked(200, "text/html", page);
 }
 //**************************************************************************************************
@@ -1383,12 +1487,14 @@ void handleStatus()
     if (!webAuthOk()) { server.requestAuthentication(); return; }
     server.keepAlive(false);
     String j;
-    j.reserve(340);
+    j.reserve(600);
     j = "{\"version\":\"" FIRMWARE_VERSION "\"";
     j += ",\"build\":\"" __DATE__ " " __TIME__ "\"";
     j += ",\"heap\":" + String(ESP.getFreeHeap());
+    j += ",\"heapMin\":" + String(heapMin == 0xFFFFFFFF ? ESP.getFreeHeap() : heapMin);
     j += ",\"rssi\":" + String(WiFi.RSSI());
     j += ",\"wifi\":" + String((int) WiFi.status());
+    j += ",\"wifiReconnects\":" + String(wifiReconnectCount);
     j += ",\"uptime\":" + String(millis() / 1000UL);
     j += ",\"reset\":\"" + jsonEsc(ESP.getResetReason().c_str()) + "\"";
     j += ",\"sketch\":" + String(ESP.getSketchSize());
@@ -1400,6 +1506,10 @@ void handleStatus()
     j += ",\"ntpRtt\":" + String(ntpLastRttMs);
     j += ",\"ntpAdj\":" + String(ntpLastTransitMs);
     j += ",\"ntpAge\":" + String(ntpLastSyncMs ? (millis() - ntpLastSyncMs) / 1000UL : 0);
+    j += ",\"ntpRetry\":" + String(ntpRetryCount);
+    j += ",\"ntpRetryIn\":" + String(ntpRetryAt ? (long) (ntpRetryAt - millis()) / 1000 : 0);
+    j += ",\"lastNtpError\":\"" + jsonEsc(lastNtpError) + "\"";
+    j += ",\"lastWeatherError\":\"" + jsonEsc(lastWeatherError) + "\"";
     j += ",\"detailCount\":" + String(weatherDetailCount);
     j += ",\"detailPage\":" + String(weatherDetailLastPage);
     j += ",\"orient\":" + String(settings.orient);
@@ -1408,6 +1518,36 @@ void handleStatus()
     server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
     server.sendHeader("Pragma", "no-cache");
     server.send(200, "application/json", j);
+}
+//**************************************************************************************************
+void handleLog()
+{
+    if (!webAuthOk()) { server.requestAuthentication(); return; }
+    String out;
+    out.reserve(LOG_LINES * (LOG_CHARS + 20) + 128);
+    out = "MatrixClock " FIRMWARE_VERSION "\r\n";
+    out += "Reset: " + ESP.getResetReason() + "\r\n";
+    out += "Uptime: " + String(millis() / 1000UL) + " s\r\n\r\n";
+    uint8_t start = (uint8_t) ((logHead + LOG_LINES - logCount) % LOG_LINES);
+    for (uint8_t i = 0; i < logCount; i++)
+    {
+        uint8_t idx = (uint8_t) ((start + i) % LOG_LINES);
+        out += "[" + String(logRing[idx].ms / 1000UL) + "s] ";
+        out += logRing[idx].text;
+        out += "\r\n";
+    }
+    server.sendHeader("Cache-Control", "no-store");
+    server.keepAlive(false);
+    server.send(200, "text/plain; charset=utf-8", out);
+}
+//**************************************************************************************************
+void handleTestDisplay()
+{
+    if (!webAuthOk()) { server.requestAuthentication(); return; }
+    displayTestStart = millis();
+    displayTestUntil = displayTestStart + 3000UL;
+    server.keepAlive(false);
+    server.send(200, "application/json", "{\"ok\":true}");
 }
 //**************************************************************************************************
 void handleScan()
@@ -1511,6 +1651,15 @@ void handleSave()
         {
             strncpy(settings.webPass, wp.c_str(), sizeof(settings.webPass) - 1);
             settings.webPass[sizeof(settings.webPass) - 1] = '\0';
+        }
+    }
+    if (server.hasArg("apPass"))
+    {
+        String ap = server.arg("apPass");
+        if (ap.length() >= 8 && ap.length() <= 63)   // blank or too short = keep the current AP password
+        {
+            strncpy(settings.apPass, ap.c_str(), sizeof(settings.apPass) - 1);
+            settings.apPass[sizeof(settings.apPass) - 1] = '\0';
         }
     }
     strncpy(settings.ntpServer, server.arg("ntp").c_str(), sizeof(settings.ntpServer) - 1);
@@ -1709,15 +1858,17 @@ void handleAPUpdate()
     if (!webAuthOk()) { server.requestAuthentication(); return; }
     if (Update.isRunning()) { server.send(503, "text/plain", "Update in progress"); return; }
     server.keepAlive(false);
-    server.send(200, "text/html", "<!DOCTYPE html><html><head><meta charset=utf-8>"
+    String page = "<!DOCTYPE html><html><head><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
         "<title>AP Update</title></head><body style='margin:0;background:#0a0d0b;color:#e8f0ec;"
         "font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;padding:48px 20px;text-align:center'>"
         "<h2 style='color:#22e07a'>Switching to setup Wi-Fi...</h2>"
         "<p style='color:#7c8c84;font-size:15px;line-height:1.6'>Connect your phone or computer to the Wi-Fi network<br>"
-        "<b style='color:#e8f0ec'>MatrixClock-Setup</b> with password <b style='color:#e8f0ec'>12345678</b><br>"
-        "then open <b style='color:#22e07a'>http://192.168.4.1/update</b></p>"
-        "</body></html>");
+        "<b style='color:#e8f0ec'>MatrixClock-Setup</b> with password <b style='color:#e8f0ec'>";
+    page += htmlEscape(settings.apPass);
+    page += "</b><br>then open <b style='color:#22e07a'>http://192.168.4.1/update</b></p>"
+        "</body></html>";
+    server.send(200, "text/html", page);
     apUpdatePending = millis() + 1500UL;   // switch after the response is flushed
 }
 
@@ -1768,7 +1919,8 @@ void handleUpdateUpload()
         msgEatActive = false;
         alertAnimActive = false;
         showMsg = false;
-        Serial.printf("OTA: receiving %s\r\n", upload.filename.c_str());
+        otaUploadInProgress = true;
+        logLine("OTA start: %s", upload.filename.c_str());
         if (upload.filename.length() == 0)
             snprintf(otaUploadError, sizeof otaUploadError, "No firmware file selected");
         else
@@ -1807,15 +1959,17 @@ void handleUpdateUpload()
             }
             otaUploadStarted = false;
         }
-        Serial.printf("OTA: finished, success=%d, bytes=%u\r\n", otaUploadSuccess, (unsigned) upload.totalSize);
+        otaUploadInProgress = false;
+        logLine("OTA end: %s, %u bytes", otaUploadSuccess ? "OK" : otaUploadError, (unsigned) upload.totalSize);
     }
     else if (upload.status == UPLOAD_FILE_ABORTED)
     {
         Update.end();
         otaUploadStarted = false;
         otaWatchdogActive = false;
+        otaUploadInProgress = false;
         snprintf(otaUploadError, sizeof otaUploadError, "Upload aborted");
-        Serial.println("OTA: aborted");
+        logLine("OTA aborted");
     }
     yield();   // let the WiFi stack and watchdog run between flash-write chunks
 }
@@ -1823,6 +1977,7 @@ void handleUpdateUpload()
 void handleUpdateDone()
 {
     otaWatchdogActive = false;
+    otaUploadInProgress = false;
     if (!webAuthOk())
     {
         if (Update.isRunning()) Update.end();
@@ -1832,7 +1987,7 @@ void handleUpdateDone()
     }
     if (otaUploadSuccess)
     {
-        Serial.println("OTA: success, rebooting");
+        logLine("OTA success, rebooting");
         // Show the result immediately: drop any queued/current message or transition
         // (in AP mode the "AP UPDATE" hint is usually still scrolling).
         msgQueueCount = 0;
@@ -1852,7 +2007,7 @@ void handleUpdateDone()
         udp.begin(localPort);   // restore the NTP socket after a failed/aborted update
         if (otaUploadError[0] == 0)
             snprintf(otaUploadError, sizeof otaUploadError, "Update failed");
-        Serial.printf("OTA: failed: %s\r\n", otaUploadError);
+        logLine("OTA failed: %s", otaUploadError);
         msgQueueCount = 0;
         alertAnimActive = false;
         apMsgUntil = 0;
@@ -1909,14 +2064,24 @@ bool geocodeCity()   // resolve settings.weatherCity to cached latitude/longitud
     if (settings.weatherCity[0] == 0) return false;
     String url = String("http://geocoding-api.open-meteo.com/v1/search?name=") + urlEncode(settings.weatherCity) + "&count=1&language=en";
     String resp;
-    if (!httpGet(url, resp)) { Serial.println("Weather: geocode request failed"); return false; }
+    if (!httpGet(url, resp))
+    {
+        snprintf(lastWeatherError, sizeof lastWeatherError, "Geocode request failed");
+        logLine("Weather: geocode request failed");
+        return false;
+    }
     double lat = jsonDoubleAfter(resp, "\"latitude\":");
     double lon = jsonDoubleAfter(resp, "\"longitude\":");
-    if (lat == 0 && lon == 0) { Serial.println("Weather: city not found"); return false; }
+    if (lat == 0 && lon == 0)
+    {
+        snprintf(lastWeatherError, sizeof lastWeatherError, "City not found");
+        logLine("Weather: city not found: %s", settings.weatherCity);
+        return false;
+    }
     settings.weatherLat = (int32_t) (lat * 1000000);
     settings.weatherLon = (int32_t) (lon * 1000000);
     settings_save();
-    Serial.printf("Weather: geocoded %s -> lat %d lon %d\r\n", settings.weatherCity, settings.weatherLat, settings.weatherLon);
+    logLine("Weather: geocoded %s -> lat %d lon %d", settings.weatherCity, settings.weatherLat, settings.weatherLon);
     return true;
 }
 
@@ -2050,7 +2215,12 @@ bool fetchWeather(double& temp, int& hum, double& precip, double& rainNext, int&
                + "&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset,uv_index_max,precipitation_probability_max"
                + "&timezone=auto&wind_speed_unit=kmh";
     String resp;
-    if (!httpGet(url, resp)) { Serial.println("Weather: forecast request failed"); return false; }
+    if (!httpGet(url, resp))
+    {
+        snprintf(lastWeatherError, sizeof lastWeatherError, "Forecast request failed");
+        logLine("Weather: forecast request failed");
+        return false;
+    }
     temp = jsonDoubleAfter(resp, "\"temperature_2m\":");
     hum = (int) jsonDoubleAfter(resp, "\"relative_humidity_2m\":");
     int curSec = resp.indexOf("\"current\":");
@@ -2136,6 +2306,8 @@ bool fetchWeather(double& temp, int& hum, double& precip, double& rainNext, int&
     strncpy(weatherDataCity, settings.weatherCity, sizeof(weatherDataCity) - 1);
     weatherDataCity[sizeof(weatherDataCity) - 1] = 0;
     weatherDataValid = true;
+    lastWeatherError[0] = 0;
+    logLine("Weather OK %s %.1fC %.1fmm/h", settings.weatherCity, temp, precip);
     return true;
 }
 //**************************************************************************************************
@@ -2695,9 +2867,13 @@ uint64_t ntpTimestampMs(const byte* p)
 }
 //**************************************************************************************************
 tm* connectNTP() { // if response from NTP was successful return *tm else return a null pointer
-    WiFi.hostByName(settings.ntpServer, timeServerIP);
-    Serial.println(timeServerIP);
-    Serial.println("sending NTP packet...");
+    if (!WiFi.hostByName(settings.ntpServer, timeServerIP) || timeServerIP == IPAddress(0, 0, 0, 0))
+    {
+        snprintf(lastNtpError, sizeof lastNtpError, "DNS lookup failed");
+        logLine("NTP: DNS lookup failed for %s", settings.ntpServer);
+        return NULL;
+    }
+    logLine("NTP: querying %s (%s)", settings.ntpServer, timeServerIP.toString().c_str());
     // set all bytes in the buffer to 0
     memset(packetBuffer, 0, NTP_PACKET_SIZE);
     // Initialize values needed to form NTP request
@@ -2727,7 +2903,8 @@ tm* connectNTP() { // if response from NTP was successful return *tm else return
     }
     unsigned long t4 = millis();        // client receive time
     if (cb < 48) {
-        Serial.printf("NTP: expected at least 48 bytes, got %d\r\n", cb);
+        snprintf(lastNtpError, sizeof lastNtpError, cb == 0 ? "No reply" : "Short reply (%d bytes)", cb);
+        logLine("NTP: no valid reply (%d bytes)", cb);
         return NULL;
     }
     udp.read(packetBuffer, NTP_PACKET_SIZE); // read the packet into the buffer
@@ -2736,7 +2913,8 @@ tm* connectNTP() { // if response from NTP was successful return *tm else return
     uint8_t version = (packetBuffer[0] >> 3) & 0x07;
     uint8_t stratum = packetBuffer[1];
     if (li == 3 || version < 1 || version > 4 || stratum == 0) {
-        Serial.printf("NTP: invalid reply LI=%d version=%d stratum=%d\r\n", li, version, stratum);
+        snprintf(lastNtpError, sizeof lastNtpError, "Invalid reply LI=%d ver=%d stratum=%d", li, version, stratum);
+        logLine("NTP: invalid reply LI=%d version=%d stratum=%d", li, version, stratum);
         return NULL;
     }
     if (li != 0)   // LI=1/2 announce a pending leap second, the time is still valid
@@ -2752,6 +2930,8 @@ tm* connectNTP() { // if response from NTP was successful return *tm else return
     ntpLastRttMs = rtt;
     ntpLastTransitMs = transit;
     ntpLastSyncMs = millis();
+    lastNtpError[0] = 0;
+    logLine("NTP OK %s RTT=%lums adj=%lums", settings.ntpServer, rtt, transit);
     // true server time when the reply arrived, rounded to the nearest second
     const unsigned long seventyYears = 2208988800UL;
     unsigned long secsSince1900 = (unsigned long)((t3 + transit + 500) / 1000);
@@ -4278,6 +4458,9 @@ void timer50ms() {
     if (cnt50ms == 20) {
         f_tckr1s = true; // 1 sec
         cnt50ms = 0;
+        if (!otaUploadInProgress && loopHeartbeatMs != 0
+            && (millis() - loopHeartbeatMs) > 30000UL)
+            ESP.restart();   // main loop stopped responding
     }
 }
 //**************************************************************************************************
@@ -4344,6 +4527,7 @@ void setup() {
     pinMode(CS, OUTPUT);
     digitalWrite(CS, HIGH);
     Serial.begin(115200);
+    logLine("Boot %s, reset %s, heap %u", FIRMWARE_VERSION, ESP.getResetReason().c_str(), ESP.getFreeHeap());
     Serial.printf("\r\nReset reason: %s\r\n", ESP.getResetReason().c_str());
     Serial.printf("Reset info: %s\r\n", ESP.getResetInfo().c_str());
     settings_load();              // load saved settings from EEPROM
@@ -4385,10 +4569,12 @@ void setup() {
     server.on("/", handleRoot);
     server.on("/v", HTTP_GET, handleValues);   // settings values JSON (single-segment response, like /)
     server.on("/status", HTTP_GET, handleStatus);   // live heap/WiFi/OTA diagnostics
+    server.on("/log", HTTP_GET, handleLog);         // recent diagnostics log
     server.on("/weather", HTTP_GET, handleWeatherPage);   // last rain/weather values vs threshold
     server.on("/scan", HTTP_GET, handleScan);       // WiFi network scan for the settings page
     server.on("/reset", HTTP_POST, handleReset);    // restore factory defaults
     server.on("/testanim", HTTP_POST, handleTestAnimation);   // preview the display-change animation
+    server.on("/testdisplay", HTTP_POST, handleTestDisplay); // test all LEDs/rows
     server.on("/save", HTTP_POST, handleSave);   // POST only: a later GET/refresh on /save must NOT re-run the save
     server.on("/update", HTTP_GET, handleUpdatePage);
     server.on("/update", HTTP_POST, handleUpdateDone, handleUpdateUpload);
@@ -4434,6 +4620,7 @@ void loop() {
 
     refresh_display();
     while (true) {
+        loopHeartbeatMs = millis();
         yield();  // on the ESP8266, if the loop must run long operations (e.g. floating point math), call yield regularly so the 8266 keeps running in the background without rebooting or dropping the network.
         handleSerialCommand();
         server.handleClient();   // handle web settings page requests
@@ -4695,6 +4882,20 @@ void loop() {
         }
         if (f_tckr1s == true)        // flag 1sek
         {kk = (settings.orient == 2) ? 1 : 0;                   // manual normal/flipped
+            uint32_t heapNow = ESP.getFreeHeap();
+            if (heapNow < heapMin) heapMin = heapNow;
+            static uint8_t heapLowCount = 0;
+            if (heapNow < 4000 && !otaBusy)
+            {
+                if (++heapLowCount >= 10)
+                {
+                    logLine("Heap low %lu B, rebooting", (unsigned long) heapNow);
+                    delay(20);
+                    ESP.restart();
+                }
+            }
+            else
+                heapLowCount = 0;
             static unsigned int wifiCheckCnt = 0;
             static bool reconnectActive = false;
             static unsigned long reconnectStart = 0;
@@ -4716,10 +4917,11 @@ void loop() {
             if (!apUpdateMode && wifiReconnectNotify)   // WiFi came up (boot or auto/manual reconnect)
             {
                 wifiReconnectNotify = false;
-                Serial.println("WiFi connected");
-                Serial.println(WiFi.localIP());
+                logLine("WiFi connected, IP %s", WiFi.localIP().toString().c_str());
                 if (ntpSyncRequested)   // genuine reconnection, or leaving AP mode -> resync the RTC once
                 {
+                    wifiReconnectCount++;
+                    logLine("WiFi reconnect #%u", wifiReconnectCount);
                     startMsg("Wi-Fi Connected");
                     ntpSyncArm = true;
                     ntpSyncRequested = false;
@@ -4909,6 +5111,36 @@ void loop() {
         } // end 1s
         if (f_tckr50ms == true) {// the following runs every 50ms to control scroll speed
             f_tckr50ms = false;
+            if (displayTestUntil != 0 && !Update.isRunning() && otaRebootAt == 0)
+            {
+                if ((long) (millis() - displayTestUntil) >= 0)
+                    displayTestUntil = 0;
+                else
+                {
+                    clearLEDarr();
+                    unsigned long elapsed = millis() - displayTestStart;
+                    if (elapsed < 1000)
+                    {
+                        for (uint8_t x = 0; x <= maxPosX; x++)
+                            for (uint8_t y = 0; y < 8; y++)
+                                setLedPixel(x, y);
+                    }
+                    else if (elapsed < 2000)
+                    {
+                        for (uint8_t x = 0; x <= maxPosX; x++)
+                            for (uint8_t y = 0; y < 8; y++)
+                                if ((x + y) & 1) setLedPixel(x, y);
+                    }
+                    else
+                    {
+                        for (uint8_t x = 0; x <= maxPosX; x++)
+                            for (uint8_t y = 0; y < 8; y++)
+                                if (((x >> 2) + y) & 1) setLedPixel(x, y);
+                    }
+                    refresh_display();
+                    continue;
+                }
+            }
             if (Update.isRunning() && otaRebootAt == 0)
                 continue;   // keep the display/SPI quiet while firmware is being written
             if (msgEatActive)   // a display-change transition is running
