@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.5"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.6"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -279,6 +279,8 @@ unsigned int localPort = 2390;                      // local port to listen for 
 const int NTP_PACKET_SIZE = 48;                     // NTP time stamp is in the first 48 bytes of the message
 byte packetBuffer[NTP_PACKET_SIZE];                 // buffer to hold incoming and outgoing packets
 IPAddress timeServerIP;                            
+long ntpLastOffsetSec = 0;                          // RTC correction in seconds (+ = clock was behind)
+bool ntpLastOffsetValid = false;
 
 const unsigned char DS3231_ADDRESS = 0x68;
 const unsigned char secondREG = 0x00;
@@ -896,6 +898,7 @@ bool displayHasPixels();
 void rtc_clearOsf();
 float rtc_temp();
 bool rtc_osf();
+bool rtc_read_tm(tm* out);
 int8_t rtc_aging();
 void startAP()   // start fallback AP so the settings page stays reachable without router WiFi
 {
@@ -1013,15 +1016,20 @@ void startMsg(const char* text, uint8_t step)   // scroll a message; queue up to
     msgQueueCount++;
 }
 //**************************************************************************************************
-void startNtpMessage(tm* tt)   // show the time that was actually synced
+void startNtpMessage(tm* tt)   // show the server, the RTC correction and the synced time
 {
     if (tt == NULL)
     {
         startMsg("NTP SYNC FAILED");
         return;
     }
-    char b[32];
-    snprintf(b, sizeof b, "NTP OK!! %02d:%02d", tt->tm_hour, tt->tm_min);
+    char b[140];
+    if (ntpLastOffsetValid)
+        snprintf(b, sizeof b, "NTP OK!! %s OFFSET %+ldS %02d:%02d",
+                 settings.ntpServer, ntpLastOffsetSec, tt->tm_hour, tt->tm_min);
+    else
+        snprintf(b, sizeof b, "NTP OK!! %s %02d:%02d",
+                 settings.ntpServer, tt->tm_hour, tt->tm_min);
     startMsg(b);
 }
 //**************************************************************************************************
@@ -2737,8 +2745,30 @@ tm* connectNTP() { // if response from NTP was successful return *tm else return
     t = epoch;
     tm* tt;
     tt = localtime(&t);
+
+    // Compare the NTP time with the RTC before the caller writes the new time.
+    ntpLastOffsetValid = false;
+    if (tt != NULL && !rtc_osf())
+    {
+        tm rtcTm;
+        if (rtc_read_tm(&rtcTm))
+        {
+            tm ntpTm = *tt;
+            rtcTm.tm_isdst = 0;   // compare wall-clock values, not DST
+            ntpTm.tm_isdst = 0;
+            time_t rtcEpoch = mktime(&rtcTm);
+            time_t ntpEpoch = mktime(&ntpTm);
+            if (rtcEpoch != (time_t) -1 && ntpEpoch != (time_t) -1)
+            {
+                ntpLastOffsetSec = (long) difftime(ntpEpoch, rtcEpoch);
+                ntpLastOffsetValid = true;
+            }
+        }
+    }
+
     Serial.println(epoch);
     Serial.println(asctime(tt));
+    Serial.printf("NTP RTC offset:%+lds (%s)\r\n", ntpLastOffsetSec, ntpLastOffsetValid ? "valid" : "invalid");
     return tt;
 }
 //**************************************************************************************************
@@ -2839,6 +2869,47 @@ void rtc_set(tm* tt) {
     else
     rtc_wochentag((unsigned char) tt->tm_wday);
     rtc_clearOsf();
+}
+//******************************Read whole RTC time (burst)************************************************
+bool rtc_read_tm(tm* out)
+{
+    if (out == NULL) return false;
+    Wire.beginTransmission(DS3231_ADDRESS);
+    Wire.write((unsigned char) secondREG);
+    if (Wire.endTransmission() != 0) return false;
+    if (Wire.requestFrom((unsigned char) DS3231_ADDRESS, (unsigned char) 7) != 7) return false;
+
+    uint8_t rawSec = Wire.read();
+    uint8_t rawMin = Wire.read();
+    uint8_t rawHour = Wire.read();
+    (void) Wire.read();                       // weekday, not needed
+    uint8_t rawDay = Wire.read();
+    uint8_t rawMonth = Wire.read();
+    uint8_t rawYear = Wire.read();
+
+    uint8_t hour;
+    if (rawHour & 0x40)                       // 12-hour mode
+    {
+        hour = bcd2dec(rawHour & 0x1F);
+        if (rawHour & 0x20)                   // PM
+        {
+            if (hour != 12) hour += 12;
+        }
+        else if (hour == 12) hour = 0;
+    }
+    else
+        hour = bcd2dec(rawHour & 0x3F);
+
+    out->tm_sec = bcd2dec(rawSec & 0x7F);
+    out->tm_min = bcd2dec(rawMin & 0x7F);
+    out->tm_hour = hour;
+    out->tm_mday = bcd2dec(rawDay & 0x3F);
+    out->tm_mon = bcd2dec(rawMonth & 0x1F) - 1;
+    out->tm_year = ((rawMonth & 0x80) ? 2100 : 2000) + bcd2dec(rawYear) - 1900;
+    out->tm_isdst = 0;
+    out->tm_wday = 0;
+    out->tm_yday = 0;
+    return true;
 }
 //*****************************Get RTC Temperature*********************************************************************
 float rtc_temp() {
