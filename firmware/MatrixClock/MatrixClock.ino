@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.7"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.8"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -3705,23 +3705,50 @@ void drawMsgEatAnimation()   // play the selected display-change animation
                         setLedPixel(x, y);
             break;
         case TRANSITION_BLINDS:
-            for (uint8_t x = 0; x <= maxPosX; x++)
-                for (uint8_t y = 0; y < 8; y++)
-                {
-                    bool visible = (y & 1) ? (f < 40) : (f < 20);
-                    if (visible && snapshotPixel(x, y))
-                        setLedPixel(x, y);
-                }
+        {
+            // Horizontal 2-row slats slide sideways like a Venetian blind.
+            for (uint8_t y = 0; y < 8; y++)
+            {
+                uint8_t slat = y >> 1;
+                uint8_t speed = 34 + (slat % 3) * 3;   // slats finish at slightly different times
+                int shift = (int) ((f * (uint16_t) speed) / 40UL);
+                int delta = (slat & 1) ? shift : -shift;   // alternate slats slide opposite ways
+                for (uint8_t x = 0; x <= maxPosX; x++)
+                    if (snapshotPixel(x, y))
+                        setLedPixel((int) x + delta, y);
+            }
             break;
+        }
         case TRANSITION_CHECKER:
-            for (uint8_t x = 0; x <= maxPosX; x++)
-                for (uint8_t y = 0; y < 8; y++)
+        {
+            // Diagonal checkerboard dissolve: 2x2 cells vanish in a wave, and
+            // each cell shrinks to a 1px checker just before it disappears.
+            uint16_t progress = (uint16_t) ((f * 320UL) / 40UL);
+            for (uint8_t cy = 0; cy < 4; cy++)
+                for (uint8_t cx = 0; cx < 16; cx++)
                 {
-                    bool visible = (((x >> 1) + (y >> 1)) & 1) ? (f < 40) : (f < 20);
-                    if (visible && snapshotPixel(x, y))
-                        setLedPixel(x, y);
+                    uint8_t d;
+                    if (transitionDir == 0)      d = cx + cy * 4;
+                    else if (transitionDir == 1) d = (15 - cx) + cy * 4;
+                    else if (transitionDir == 2) d = cx + (3 - cy) * 4;
+                    else                         d = (15 - cx) + (3 - cy) * 4;
+
+                    uint16_t threshold = 40 + (uint16_t) ((d * 160UL) / 27UL);
+                    if ((cx + cy) & 1) threshold += 100;   // alternating cells lag behind
+                    if (progress >= threshold) continue;
+                    bool shrink = (progress + 32 >= threshold);
+
+                    for (uint8_t dy = 0; dy < 2; dy++)
+                        for (uint8_t dx = 0; dx < 2; dx++)
+                        {
+                            if (shrink && (dx ^ dy)) continue;   // final 1px checker phase
+                            uint8_t x = cx * 2 + dx;
+                            uint8_t y = cy * 2 + dy;
+                            if (snapshotPixel(x, y)) setLedPixel(x, y);
+                        }
                 }
             break;
+        }
         case TRANSITION_MELT:
             for (uint8_t x = 0; x <= maxPosX; x++)
             {
