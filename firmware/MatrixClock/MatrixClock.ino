@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.12"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.13"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -48,7 +48,7 @@ enum {
     TRANSITION_SPARKLE,
     TRANSITION_SNAKE,
     TRANSITION_BARN,
-    TRANSITION_BREAKOUT,
+    TRANSITION_BREAKOUT,   // removed; value kept so saved settings keep their numbering
     TRANSITION_SPACE,
     TRANSITION_TETRIS,
     TRANSITION_RANDOM
@@ -801,6 +801,11 @@ void settings_load()
         repaired = true;
     }
     if (settings.displayTransition > TRANSITION_RANDOM) { settings.displayTransition = TRANSITION_PACMAN; repaired = true; }
+    if (settings.displayTransition == TRANSITION_BREAKOUT)
+    {
+        settings.displayTransition = TRANSITION_SPACE;   // Breakout was removed
+        repaired = true;
+    }
     if (settings.holidayFreq != 0 && settings.holidayFreq != 15 && settings.holidayFreq != 30
         && settings.holidayFreq != 60 && settings.holidayFreq != 120 && settings.holidayFreq != 240)
     { settings.holidayFreq = 0; repaired = true; }
@@ -1162,7 +1167,7 @@ void handleValues()
     j += "[\"Colon Animation\",\"colonAnim\",[[\"0\",\"Solid\"],[\"1\",\"Blink\"],[\"2\",\"Slow\"],[\"3\",\"Dbl\"],[\"4\",\"Alt\"],[\"5\",\"Center Out\"]],\"" + String(settings.colonAnim) + "\"],";
     j += "[\"Digit Animation\",\"digitAnim\",[[\"0\",\"Off\"],[\"1\",\"Roll\"],[\"2\",\"Flip\"],[\"3\",\"Wipe\"],[\"4\",\"Fade\"],[\"5\",\"Drop\"]],\"" + String(settings.digitAnim) + "\"],";
     j += "[\"Message Effect\",\"textEffect\",[[\"0\",\"Scroll\"],[\"1\",\"Fade\"],[\"4\",\"Blink\"]],\"" + String(settings.textEffect) + "\"],";
-    j += "[\"Display Transition\",\"displayTransition\",[[\"0\",\"Off\"],[\"1\",\"Pac-Man\"],[\"2\",\"Wipe\"],[\"3\",\"Dissolve\"],[\"4\",\"Blinds\"],[\"5\",\"Checkerboard\"],[\"6\",\"Melt\"],[\"7\",\"Matrix Rain\"],[\"8\",\"Slide\"],[\"9\",\"Sparkle\"],[\"10\",\"Snake\"],[\"11\",\"Barn Door\"],[\"12\",\"Breakout\"],[\"13\",\"Space Invaders\"],[\"14\",\"Tetris\"],[\"15\",\"Random\"]],\"" + String(settings.displayTransition) + "\"],";
+    j += "[\"Display Transition\",\"displayTransition\",[[\"0\",\"Off\"],[\"1\",\"Pac-Man\"],[\"2\",\"Wipe\"],[\"3\",\"Dissolve\"],[\"4\",\"Blinds\"],[\"5\",\"Checkerboard\"],[\"6\",\"Melt\"],[\"7\",\"Matrix Rain\"],[\"8\",\"Slide\"],[\"9\",\"Sparkle\"],[\"10\",\"Snake\"],[\"11\",\"Barn Door\"],[\"13\",\"Space Invaders\"],[\"14\",\"Tetris\"],[\"15\",\"Random\"]],\"" + String(settings.displayTransition) + "\"],";
     j += "[\"NTP Resync\",\"resync\",[[\"0\",\"Off\"],[\"1\",\"On\"]],\"" + String(settings.resync) + "\"],";
     j += "[\"Resync Hour\",\"resyncHour\",null,\"" + String(settings.resyncHour) + "\"],";
     j += "[\"Resync Minute\",\"resyncMin\",null,\"" + String(settings.resyncMin) + "\"],";
@@ -3481,13 +3486,17 @@ uint8_t pickTransitionType(uint8_t configured)
     uint8_t type = configured;
     if (type > TRANSITION_RANDOM)
         type = TRANSITION_PACMAN;
+    if (type == TRANSITION_BREAKOUT)
+        type = TRANSITION_SPACE;   // removed transition
     if (type == TRANSITION_RANDOM)
     {
         if (transitionBagPos >= transitionBagCount)
         {
-            for (uint8_t i = 0; i < TRANSITION_TETRIS; i++)
-                transitionBag[i] = i + 1;
-            for (uint8_t i = TRANSITION_TETRIS - 1; i > 0; i--)
+            uint8_t n = 0;
+            for (uint8_t t = 1; t <= TRANSITION_TETRIS; t++)
+                if (t != TRANSITION_BREAKOUT)
+                    transitionBag[n++] = t;
+            for (uint8_t i = n - 1; i > 0; i--)
             {
                 uint8_t j = (uint8_t) (rngNext() % (i + 1));
                 uint8_t t = transitionBag[i];
@@ -3501,7 +3510,7 @@ uint8_t pickTransitionType(uint8_t configured)
                 transitionBag[1] = t;
             }
             transitionBagPos = 0;
-            transitionBagCount = TRANSITION_TETRIS;
+            transitionBagCount = n;
         }
         type = transitionBag[transitionBagPos++];
         lastRandomType = type;
@@ -3532,7 +3541,7 @@ void drawMsgEatAnimation()   // play the selected display-change animation
     if (transitionType == TRANSITION_PACMAN)
         total = PACMAN_FRAMES;
     else if (transitionType == TRANSITION_SNAKE
-             || (transitionType >= TRANSITION_BREAKOUT && transitionType <= TRANSITION_TETRIS))
+             || (transitionType >= TRANSITION_SPACE && transitionType <= TRANSITION_TETRIS))
         total = GAME_FRAMES;
     uint16_t progress = (uint16_t) ((f * 256UL) / total);
 
@@ -3571,85 +3580,6 @@ void drawMsgEatAnimation()   // play the selected display-change animation
                 if (x + 4 < dotX)
                     setLedPixel(dotX, 4);   // single center dot row
             drawPacmanSprite(x, y, f);
-            break;
-        }
-        case TRANSITION_BREAKOUT:
-        {
-            // Simple Breakout game: 16 bricks, a bouncing 2x2 ball and a
-            // paddle that tracks the ball. Bricks disappear when hit.
-            static uint8_t ballX, ballY, paddleX;
-            static int8_t bdx, bdy;
-            static uint16_t bricks;
-
-            if (f == 0)
-            {
-                ballX = 15; ballY = 6;
-                bdx = 1; bdy = -1;
-                paddleX = 12;
-                bricks = 0xFFFF;
-            }
-            else
-            {
-                int prevY = ballY;
-                ballX += bdx;
-                ballY += bdy;
-
-                if (ballX < 0)  { ballX = 0;  bdx = -bdx; }
-                if (ballX > 30) { ballX = 30; bdx = -bdx; }
-                if (ballY < 0)  { ballY = 0;  bdy = -bdy; }
-
-                for (uint8_t i = 0; i < 16; i++)
-                {
-                    if (!(bricks & (1u << i))) continue;
-                    int bx = 2 + (i & 7) * 4;
-                    int by = (i < 8) ? 0 : 2;
-                    if (ballX < bx + 2 && ballX + 2 > bx
-                        && ballY < by + 2 && ballY + 2 > by)
-                    {
-                        bricks &= ~(1u << i);
-                        bdy = -bdy;
-                        ballY = prevY;   // stay outside the removed brick
-                        break;
-                    }
-                }
-
-                if (bdy > 0 && ballY >= 6
-                    && ballX + 2 > paddleX && ballX < paddleX + 8)
-                {
-                    ballY = 6;
-                    bdy = -1;
-                    int hit = (int) ballX + 1 - ((int) paddleX + 4);
-                    if (hit < 0) bdx = -1;
-                    else if (hit > 0) bdx = 1;
-                }
-
-                if (ballY > 7)   // missed: serve again from the paddle
-                {
-                    ballX = paddleX + 3;
-                    ballY = 6;
-                    bdx = 1;
-                    bdy = -1;
-                }
-
-                int target = (int) ballX - 3;
-                if (target < 0) target = 0;
-                if (target > 24) target = 24;
-                int p = paddleX;
-                if (p < target)      p = (p + 2 > target) ? target : p + 2;
-                else if (p > target) p = (p - 2 < target) ? target : p - 2;
-                paddleX = (uint8_t) p;
-            }
-
-            for (uint8_t i = 0; i < 16; i++)
-            {
-                if (!(bricks & (1u << i))) continue;
-                int bx = 2 + (i & 7) * 4;
-                int by = (i < 8) ? 0 : 2;
-                drawBlock2x2(bx, by);
-            }
-            drawBlock2x2(ballX, ballY);
-            for (uint8_t i = 0; i < 8; i++)
-                setLedPixel((int) paddleX + i, 7);
             break;
         }
         case TRANSITION_SPACE:
@@ -4036,7 +3966,7 @@ void drawMsgEatAnimation()   // play the selected display-change animation
 
     if (transitionType == TRANSITION_PACMAN
         || transitionType == TRANSITION_SNAKE
-        || (transitionType >= TRANSITION_BREAKOUT && transitionType <= TRANSITION_TETRIS))
+        || (transitionType >= TRANSITION_SPACE && transitionType <= TRANSITION_TETRIS))
         msgEatFrame++;   // give the game animations their full duration
     else
         msgEatFrame += 2;   // other transitions run in about half the time
