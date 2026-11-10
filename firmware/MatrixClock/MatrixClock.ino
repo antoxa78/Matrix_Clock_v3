@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.6"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.7"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -279,8 +279,9 @@ unsigned int localPort = 2390;                      // local port to listen for 
 const int NTP_PACKET_SIZE = 48;                     // NTP time stamp is in the first 48 bytes of the message
 byte packetBuffer[NTP_PACKET_SIZE];                 // buffer to hold incoming and outgoing packets
 IPAddress timeServerIP;                            
-long ntpLastOffsetSec = 0;                          // RTC correction in seconds (+ = clock was behind)
-bool ntpLastOffsetValid = false;
+unsigned long ntpLastRttMs = 0;                     // last measured NTP round-trip time
+unsigned long ntpLastTransitMs = 0;                 // one-way correction applied to the server timestamp
+unsigned long ntpLastSyncMs = 0;                    // millis() of the last successful NTP sync
 
 const unsigned char DS3231_ADDRESS = 0x68;
 const unsigned char secondREG = 0x00;
@@ -898,7 +899,6 @@ bool displayHasPixels();
 void rtc_clearOsf();
 float rtc_temp();
 bool rtc_osf();
-bool rtc_read_tm(tm* out);
 int8_t rtc_aging();
 void startAP()   // start fallback AP so the settings page stays reachable without router WiFi
 {
@@ -1016,7 +1016,7 @@ void startMsg(const char* text, uint8_t step)   // scroll a message; queue up to
     msgQueueCount++;
 }
 //**************************************************************************************************
-void startNtpMessage(tm* tt)   // show the server, the RTC correction and the synced time
+void startNtpMessage(tm* tt)   // show the server, the ping correction and the synced time
 {
     if (tt == NULL)
     {
@@ -1024,12 +1024,8 @@ void startNtpMessage(tm* tt)   // show the server, the RTC correction and the sy
         return;
     }
     char b[140];
-    if (ntpLastOffsetValid)
-        snprintf(b, sizeof b, "NTP OK!! %s OFFSET %+ldS %02d:%02d",
-                 settings.ntpServer, ntpLastOffsetSec, tt->tm_hour, tt->tm_min);
-    else
-        snprintf(b, sizeof b, "NTP OK!! %s %02d:%02d",
-                 settings.ntpServer, tt->tm_hour, tt->tm_min);
+    snprintf(b, sizeof b, "NTP OK!! %s PING %luMS ADJ %luMS %02d:%02d",
+             settings.ntpServer, ntpLastRttMs, ntpLastTransitMs, tt->tm_hour, tt->tm_min);
     startMsg(b);
 }
 //**************************************************************************************************
@@ -1335,6 +1331,25 @@ void handleWeatherPage()
         if (!fresh) page += " (STALE)";
         page += "</td></tr>";
     }
+    page += "</table>";
+    page += "<h1>NTP</h1><table>";
+    page += "<tr><td>Server</td><td>";
+    page += settings.ntpServer[0] ? settings.ntpServer : "not set";
+    page += "</td></tr>";
+    if (ntpLastSyncMs != 0)
+    {
+        char row[80];
+        page += "<tr><td>Ping (round trip)</td><td>";
+        page += String(ntpLastRttMs);
+        page += " ms</td></tr><tr><td>Time adjustment</td><td>";
+        page += String(ntpLastTransitMs);
+        page += " ms</td></tr><tr><td>Last sync</td><td>";
+        snprintf(row, sizeof row, "%lu s ago", (millis() - ntpLastSyncMs) / 1000UL);
+        page += row;
+        page += "</td></tr>";
+    }
+    else
+        page += "<tr><td>Status</td><td class=no>Waiting for first sync</td></tr>";
     page += "</table><div class=note>";
     if (settings.weather || settings.rainWarn || settings.heatWarn)
     {
@@ -1361,7 +1376,7 @@ void handleStatus()
     if (!webAuthOk()) { server.requestAuthentication(); return; }
     server.keepAlive(false);
     String j;
-    j.reserve(260);
+    j.reserve(340);
     j = "{\"version\":\"" FIRMWARE_VERSION "\"";
     j += ",\"build\":\"" __DATE__ " " __TIME__ "\"";
     j += ",\"heap\":" + String(ESP.getFreeHeap());
@@ -1375,6 +1390,9 @@ void handleStatus()
     j += ",\"rtcTemp\":" + String(rtc_temp(), 1);
     j += ",\"rtcOsf\":" + String(rtc_osf() ? 1 : 0);
     j += ",\"rtcAging\":" + String(rtc_aging());
+    j += ",\"ntpRtt\":" + String(ntpLastRttMs);
+    j += ",\"ntpAdj\":" + String(ntpLastTransitMs);
+    j += ",\"ntpAge\":" + String(ntpLastSyncMs ? (millis() - ntpLastSyncMs) / 1000UL : 0);
     j += ",\"detailCount\":" + String(weatherDetailCount);
     j += ",\"detailPage\":" + String(weatherDetailLastPage);
     j += ",\"orient\":" + String(settings.orient);
@@ -2724,6 +2742,9 @@ tm* connectNTP() { // if response from NTP was successful return *tm else return
     unsigned long serverProc = (t3 > t2) ? (unsigned long)(t3 - t2) : 0;
     unsigned long rtt = (serverProc < elapsed) ? (elapsed - serverProc) : elapsed;
     unsigned long transit = rtt / 2;    // one-way network delay (assumes symmetric paths)
+    ntpLastRttMs = rtt;
+    ntpLastTransitMs = transit;
+    ntpLastSyncMs = millis();
     // true server time when the reply arrived, rounded to the nearest second
     const unsigned long seventyYears = 2208988800UL;
     unsigned long secsSince1900 = (unsigned long)((t3 + transit + 500) / 1000);
@@ -2745,30 +2766,8 @@ tm* connectNTP() { // if response from NTP was successful return *tm else return
     t = epoch;
     tm* tt;
     tt = localtime(&t);
-
-    // Compare the NTP time with the RTC before the caller writes the new time.
-    ntpLastOffsetValid = false;
-    if (tt != NULL && !rtc_osf())
-    {
-        tm rtcTm;
-        if (rtc_read_tm(&rtcTm))
-        {
-            tm ntpTm = *tt;
-            rtcTm.tm_isdst = 0;   // compare wall-clock values, not DST
-            ntpTm.tm_isdst = 0;
-            time_t rtcEpoch = mktime(&rtcTm);
-            time_t ntpEpoch = mktime(&ntpTm);
-            if (rtcEpoch != (time_t) -1 && ntpEpoch != (time_t) -1)
-            {
-                ntpLastOffsetSec = (long) difftime(ntpEpoch, rtcEpoch);
-                ntpLastOffsetValid = true;
-            }
-        }
-    }
-
     Serial.println(epoch);
     Serial.println(asctime(tt));
-    Serial.printf("NTP RTC offset:%+lds (%s)\r\n", ntpLastOffsetSec, ntpLastOffsetValid ? "valid" : "invalid");
     return tt;
 }
 //**************************************************************************************************
@@ -2869,47 +2868,6 @@ void rtc_set(tm* tt) {
     else
     rtc_wochentag((unsigned char) tt->tm_wday);
     rtc_clearOsf();
-}
-//******************************Read whole RTC time (burst)************************************************
-bool rtc_read_tm(tm* out)
-{
-    if (out == NULL) return false;
-    Wire.beginTransmission(DS3231_ADDRESS);
-    Wire.write((unsigned char) secondREG);
-    if (Wire.endTransmission() != 0) return false;
-    if (Wire.requestFrom((unsigned char) DS3231_ADDRESS, (unsigned char) 7) != 7) return false;
-
-    uint8_t rawSec = Wire.read();
-    uint8_t rawMin = Wire.read();
-    uint8_t rawHour = Wire.read();
-    (void) Wire.read();                       // weekday, not needed
-    uint8_t rawDay = Wire.read();
-    uint8_t rawMonth = Wire.read();
-    uint8_t rawYear = Wire.read();
-
-    uint8_t hour;
-    if (rawHour & 0x40)                       // 12-hour mode
-    {
-        hour = bcd2dec(rawHour & 0x1F);
-        if (rawHour & 0x20)                   // PM
-        {
-            if (hour != 12) hour += 12;
-        }
-        else if (hour == 12) hour = 0;
-    }
-    else
-        hour = bcd2dec(rawHour & 0x3F);
-
-    out->tm_sec = bcd2dec(rawSec & 0x7F);
-    out->tm_min = bcd2dec(rawMin & 0x7F);
-    out->tm_hour = hour;
-    out->tm_mday = bcd2dec(rawDay & 0x3F);
-    out->tm_mon = bcd2dec(rawMonth & 0x1F) - 1;
-    out->tm_year = ((rawMonth & 0x80) ? 2100 : 2000) + bcd2dec(rawYear) - 1900;
-    out->tm_isdst = 0;
-    out->tm_wday = 0;
-    out->tm_yday = 0;
-    return true;
 }
 //*****************************Get RTC Temperature*********************************************************************
 float rtc_temp() {
