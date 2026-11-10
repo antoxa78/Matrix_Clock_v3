@@ -32,7 +32,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.4"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.5"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -3588,7 +3588,7 @@ void drawMsgEatAnimation()   // play the selected display-change animation
             static const uint16_t bottomMask = 0xFF7F;   // full bottom row except block 7
             static const uint16_t tTopMask   = 0x01C0;   // T top row at blocks 6,7,8
 
-            if (f < 50)
+            if (f < 47)
             {
                 for (uint8_t bx = 0; bx < 16; bx++)
                 {
@@ -3610,18 +3610,32 @@ void drawMsgEatAnimation()   // play the selected display-change animation
                 drawBlock2x2(14, py + 2);
 
                 // Completed bottom line flash.
-                if (f >= 42 && f < 50 && ((f / 2) & 1) == 0)
+                if (f >= 42 && ((f / 2) & 1) == 0)
                     for (uint8_t x = 0; x <= maxPosX; x++)
                         setLedPixel(x, 7);
             }
             else
             {
-                // Bottom line cleared: the rows above drop one block.
+                // The bottom line is erased, then the rows above drop one block.
                 uint16_t newBottom = stackMask | tTopMask;
-                for (uint8_t bx = 0; bx < 16; bx++)
+                if (f < 51)
                 {
-                    if (topMask & (1u << bx))      drawBlock2x2(bx * 2, 4);
-                    if (newBottom & (1u << bx))    drawBlock2x2(bx * 2, 6);
+                    // Brief "line cleared" gap: bottom two pixel rows stay empty.
+                    for (uint8_t bx = 0; bx < 16; bx++)
+                    {
+                        if (topMask & (1u << bx))   drawBlock2x2(bx * 2, 2);
+                        if (newBottom & (1u << bx)) drawBlock2x2(bx * 2, 4);
+                    }
+                }
+                else
+                {
+                    int dropping = 1 + (f - 51) / 5;   // 1 px, then 2 px
+                    if (dropping > 2) dropping = 2;
+                    for (uint8_t bx = 0; bx < 16; bx++)
+                    {
+                        if (topMask & (1u << bx))   drawBlock2x2(bx * 2, 2 + dropping);
+                        if (newBottom & (1u << bx)) drawBlock2x2(bx * 2, 4 + dropping);
+                    }
                 }
             }
             break;
