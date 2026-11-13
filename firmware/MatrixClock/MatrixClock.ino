@@ -33,7 +33,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.21"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.22"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -1119,21 +1119,22 @@ String tenthsStr(uint16_t v)   // 12 -> "1.2" (used by the settings page and log
     return String(b);
 }
 //**************************************************************************************************
-#define WEB_SEND_TIMEOUT_MS 6000UL   // hard cap on one response, so a stalled browser cannot freeze the clock
+#define WEB_SEND_TIMEOUT_MS 45000UL   // hard cap on one response, so a stalled browser cannot freeze the clock forever
 
 void sendChunked(int code, const char* contentType, const String& body)
     // ESP8266 lwIP can silently drop a TCP segment when a response is handed to the socket as one
     // large write() and never retransmit it -- which is why the settings page used to need several
-    // reloads to fully load. Sending the same bytes as a series of small, explicit writes (each
-    // well under one TCP segment) with a yield() between them avoids that failure mode.
+    // reloads to fully load. Sending the same bytes as a series of explicit writes (each well under
+    // one TCP segment) with a yield() between them avoids that failure mode.
     // The writes are zero-copy: they point straight into the existing body buffer. The previous
     // version built a fresh substring() String per chunk, and when that allocation failed under
     // heap fragmentation it silently sent nothing while the loop still advanced -- leaving holes
     // in the middle of the page (the "settings page sometimes incomplete" bug).
 {
-    const size_t CHUNK = 512;
+    const size_t CHUNK = 1024;
     const char* p = body.c_str();
     size_t total = body.length();
+    server.client().setNoDelay(true);   // small chunks + Nagle = one delayed ACK per chunk
     server.setContentLength(total);
     server.send(code, contentType, "");
     unsigned long started = millis();
@@ -1161,13 +1162,14 @@ void sendChunked(int code, const char* contentType, const String& body)
 void sendChunked_P(int code, const char* contentType, const char* body)
     // Same as sendChunked(), but the body stays in flash (PROGMEM) instead of using heap.
 {
-    const size_t CHUNK = 512;
+    const size_t CHUNK = 1024;
     size_t total = strlen_P(body);
+    server.client().setNoDelay(true);   // small chunks + Nagle = one delayed ACK per chunk
     server.setContentLength(total);
     server.send(code, contentType, "");
     unsigned long started = millis();
     size_t sentLen = 0;
-    char buf[CHUNK];
+    static char buf[CHUNK];   // static: keep the larger buffer off the 4 KB loop stack
     while (sentLen < total)
     {
         loopHeartbeatMs = millis();
