@@ -33,7 +33,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.22"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.23"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -1112,6 +1112,16 @@ String jsonEsc(const char* s)   // escape special chars so saved values can't br
     return out;
 }
 //**************************************************************************************************
+uint32_t fnv1aHash(const char* data, size_t len, uint32_t h)
+{
+    while (len--)
+    {
+        h ^= (uint8_t) *data++;
+        h *= 16777619UL;
+    }
+    return h;
+}
+//**************************************************************************************************
 String tenthsStr(uint16_t v)   // 12 -> "1.2" (used by the settings page and logs)
 {
     char b[10];
@@ -1276,8 +1286,23 @@ void handleValues()
         if (i + 1 < BIRTHDAY_MAX) j += ",";
     }
     j += "]}";
-    server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
-    server.sendHeader("Pragma", "no-cache");
+    // Hash the exact JSON that will be sent. This makes /v cacheable without a
+    // separate revision counter: any settings change produces a new ETag, and a
+    // reboot cannot collide with an older cached value because the JSON itself
+    // is hashed.
+    uint32_t hash = fnv1aHash(FIRMWARE_VERSION, strlen(FIRMWARE_VERSION), 2166136261UL);
+    hash = fnv1aHash(j.c_str(), j.length(), hash);
+    char etag[16];
+    snprintf(etag, sizeof etag, "\"%08lx\"", (unsigned long) hash);
+    if (server.header("If-None-Match") == etag)
+    {
+        server.sendHeader("Cache-Control", "private, no-cache, must-revalidate");
+        server.sendHeader("ETag", etag);
+        server.send(304, "text/plain", "");
+        return;
+    }
+    server.sendHeader("Cache-Control", "private, no-cache, must-revalidate");
+    server.sendHeader("ETag", etag);
     sendChunked(200, "application/json", j);
 }
 //**************************************************************************************************
