@@ -27,13 +27,16 @@
 #include <ESP8266HTTPClient.h>
 #include <stdarg.h>
 #include "WebPage.h"
+#include "WebCss.h"
+#include "WebJs.h"
+#include "WebAssetsGz.h"
 
 #define SDA        5      // Pin sda (I2C)
 #define SCL        4      // Pin scl (I2C)
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.23"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.24"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -956,6 +959,7 @@ void rtc_clearOsf();
 float rtc_temp();
 bool rtc_osf();
 int8_t rtc_aging();
+void serviceClockDisplayDuringWeb();
 void startAP()   // start fallback AP so the settings page stays reachable without router WiFi
 {
     if (apActive) return;
@@ -1154,6 +1158,7 @@ void sendChunked(int code, const char* contentType, const String& body)
         // Serving an HTTP response is real work, not a hung main loop. Keep the 30 s
         // loop watchdog from resetting the clock while a large page is going out.
         loopHeartbeatMs = millis();
+        serviceClockDisplayDuringWeb();
         if (millis() - started > WEB_SEND_TIMEOUT_MS) { server.client().stop(); return; }
         size_t n = min(CHUNK, total - sentLen);
         size_t written = server.client().write(p + sentLen, n);
@@ -1169,11 +1174,10 @@ void sendChunked(int code, const char* contentType, const String& body)
     }
 }
 //**************************************************************************************************
-void sendChunked_P(int code, const char* contentType, const char* body)
+void sendChunked_P(int code, const char* contentType, const char* body, size_t total)
     // Same as sendChunked(), but the body stays in flash (PROGMEM) instead of using heap.
 {
     const size_t CHUNK = 1024;
-    size_t total = strlen_P(body);
     server.client().setNoDelay(true);   // small chunks + Nagle = one delayed ACK per chunk
     server.setContentLength(total);
     server.send(code, contentType, "");
@@ -1183,6 +1187,7 @@ void sendChunked_P(int code, const char* contentType, const char* body)
     while (sentLen < total)
     {
         loopHeartbeatMs = millis();
+        serviceClockDisplayDuringWeb();
         if (millis() - started > WEB_SEND_TIMEOUT_MS) { server.client().stop(); return; }
         size_t n = min(CHUNK, total - sentLen);
         memcpy_P(buf, body + sentLen, n);
@@ -1203,29 +1208,73 @@ void sendChunked_P(int code, const char* contentType, const char* body)
         yield();
     }
 }
+
+void sendChunked_P(int code, const char* contentType, const char* body)
+{
+    sendChunked_P(code, contentType, body, strlen_P(body));
+}
 //**************************************************************************************************
 
-void handleRoot()
+bool clientAcceptsGzip()
 {
-    // Cosmetic + mobile-optimized settings page. The page is stored in flash (PROGMEM)
-    // and sent in small chunks, so it does not consume the ESP8266 heap.
-    if (!webAuthOk()) { server.requestAuthentication(); return; }
-    static const char PAGE_ETAG[] = "\"" FIRMWARE_VERSION " " __DATE__ " " __TIME__ "\"";
-    // The page is static for a given build. Revalidate it with an ETag so a normal
-    // visit returns a tiny 304 instead of streaming ~28 KB again: that large
-    // transfer is what blocks the display loop and makes the clock look frozen.
-    if (server.header("If-None-Match") == PAGE_ETAG)
+    return server.header("Accept-Encoding").indexOf("gzip") >= 0;
+}
+
+void sendWebAsset(const char* etag, const char* contentType, const char* raw, size_t rawLen,
+                  const uint8_t* gz, size_t gzLen, size_t expectedRawLen)
+{
+    if (server.header("If-None-Match") == etag)
     {
         server.sendHeader("Cache-Control", "private, no-cache, must-revalidate");
-        server.sendHeader("ETag", PAGE_ETAG);
+        server.sendHeader("ETag", etag);
+        server.sendHeader("Vary", "Accept-Encoding");
         server.keepAlive(false);
         server.send(304, "text/plain", "");
         return;
     }
+
     server.sendHeader("Cache-Control", "private, no-cache, must-revalidate");
-    server.sendHeader("ETag", PAGE_ETAG);
+    server.sendHeader("ETag", etag);
+    server.sendHeader("Vary", "Accept-Encoding");
+    bool useGzip = gzLen > 0 && rawLen == expectedRawLen && clientAcceptsGzip();
+    if (useGzip)
+    {
+        server.sendHeader("Content-Encoding", "gzip");
+        sendChunked_P(200, contentType, (const char*) gz, gzLen);
+    }
+    else
+    {
+        sendChunked_P(200, contentType, raw, rawLen);
+    }
+}
+
+void handleRoot()
+{
+    // Settings page shell. CSS and JS are separate cacheable assets, so a repeat
+    // visit only revalidates this small HTML file instead of downloading ~28 KB.
+    if (!webAuthOk()) { server.requestAuthentication(); return; }
+    static const char PAGE_ETAG[] = "\"" FIRMWARE_VERSION " " __DATE__ " " __TIME__ "\"";
     server.keepAlive(false);   // free the socket after the page; avoids ESP8266 keep-alive stalls
-    sendChunked_P(200, "text/html", ROOT_PAGE);
+    sendWebAsset(PAGE_ETAG, "text/html", ROOT_PAGE, strlen_P(ROOT_PAGE),
+                 WEB_HTML_GZ, WEB_HTML_GZ_LEN, WEB_HTML_RAW_LEN);
+}
+
+void handleCss()
+{
+    if (!webAuthOk()) { server.requestAuthentication(); return; }
+    static const char CSS_ETAG[] = "\"" FIRMWARE_VERSION " css " __DATE__ " " __TIME__ "\"";
+    server.keepAlive(false);
+    sendWebAsset(CSS_ETAG, "text/css", APP_CSS, strlen_P(APP_CSS),
+                 WEB_CSS_GZ, WEB_CSS_GZ_LEN, WEB_CSS_RAW_LEN);
+}
+
+void handleJs()
+{
+    if (!webAuthOk()) { server.requestAuthentication(); return; }
+    static const char JS_ETAG[] = "\"" FIRMWARE_VERSION " js " __DATE__ " " __TIME__ "\"";
+    server.keepAlive(false);
+    sendWebAsset(JS_ETAG, "application/javascript", APP_JS, strlen_P(APP_JS),
+                 WEB_JS_GZ, WEB_JS_GZ_LEN, WEB_JS_RAW_LEN);
 }
 //**************************************************************************************************
 void handleValues()
@@ -3632,6 +3681,30 @@ void drawDate(int posX)
     char2Arr(48 + MEZ.jahr1, posX - 86, 0);
 }
 
+void serviceClockDisplayDuringWeb()
+    // The web server is synchronous, so a large response would otherwise stop
+    // the 50 ms display task. Keep showing the current time while bytes are going
+    // out. Scrolling messages, transitions and date scrolls are left alone: they
+    // resume as soon as the response has finished.
+{
+    static unsigned long lastService = 0;
+    if (millis() - lastService < 250) return;
+    lastService = millis();
+    if (showMsg || msgEatActive || alertAnimActive || displayTestUntil != 0) return;
+    if (z_PosX != maxPosX) return;   // date/message scroll in progress
+    rtc2mez();
+    digitAnimCancelAll();
+    clearLEDarr();
+    drawDigitCell(0, MEZ.sek1, z_PosX - 27, true);   // seconds ones
+    drawDigitCell(1, MEZ.sek2, z_PosX - 23, true);   // seconds tens
+    drawDigitCell(2, MEZ.min1, z_PosX - 18, false);  // minutes ones
+    drawDigitCell(3, MEZ.min2, z_PosX - 13, false);  // minutes tens
+    drawColon(z_PosX - 10);
+    drawDigitCell(4, MEZ.std1, z_PosX - 4, false);   // hours ones
+    drawDigitCell(5, MEZ.std2, z_PosX + 1, false);   // hours tens
+    refresh_display();
+}
+
 void setLedPixel(int x, int y)
 {
     if (x < 0 || x > (int) maxPosX || y < 0 || y > 7) return;
@@ -4625,6 +4698,8 @@ void setup() {
     }
     ///////////////////////////////////
     server.on("/", handleRoot);
+    server.on("/app.css", HTTP_GET, handleCss);
+    server.on("/app.js", HTTP_GET, handleJs);
     server.on("/v", HTTP_GET, handleValues);   // settings values JSON (single-segment response, like /)
     server.on("/status", HTTP_GET, handleStatus);   // live heap/WiFi/OTA diagnostics
     server.on("/log", HTTP_GET, handleLog);         // recent diagnostics log
@@ -4639,6 +4714,7 @@ void setup() {
     server.on("/apupdate", HTTP_GET, handleAPUpdate);
     server.on("/reboot", HTTP_GET, handleReboot);
     server.on("/restart", HTTP_GET, handleReboot);
+    server.collectHeaders("Accept-Encoding");   // needed to decide between gzip and raw assets
     server.begin();
     Serial.println("Web server started");
     ///////////////////////////////////
