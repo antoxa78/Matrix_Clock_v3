@@ -33,7 +33,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.20"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.21"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -1119,6 +1119,8 @@ String tenthsStr(uint16_t v)   // 12 -> "1.2" (used by the settings page and log
     return String(b);
 }
 //**************************************************************************************************
+#define WEB_SEND_TIMEOUT_MS 6000UL   // hard cap on one response, so a stalled browser cannot freeze the clock
+
 void sendChunked(int code, const char* contentType, const String& body)
     // ESP8266 lwIP can silently drop a TCP segment when a response is handed to the socket as one
     // large write() and never retransmit it -- which is why the settings page used to need several
@@ -1138,12 +1140,16 @@ void sendChunked(int code, const char* contentType, const String& body)
     size_t sentLen = 0;
     while (sentLen < total)
     {
+        // Serving an HTTP response is real work, not a hung main loop. Keep the 30 s
+        // loop watchdog from resetting the clock while a large page is going out.
+        loopHeartbeatMs = millis();
+        if (millis() - started > WEB_SEND_TIMEOUT_MS) { server.client().stop(); return; }
         size_t n = min(CHUNK, total - sentLen);
         size_t written = server.client().write(p + sentLen, n);
         if (written == 0)   // socket stalled or gone: back off and retry the same bytes
         {
             if (!server.client().connected()) return;   // browser vanished, nothing more to send
-            if (millis() - started > 15000UL) { server.client().stop(); return; }   // never block the whole clock on one page
+            if (millis() - started > WEB_SEND_TIMEOUT_MS) { server.client().stop(); return; }   // never block the whole clock on one page
             delay(2);
             continue;
         }
@@ -1164,6 +1170,8 @@ void sendChunked_P(int code, const char* contentType, const char* body)
     char buf[CHUNK];
     while (sentLen < total)
     {
+        loopHeartbeatMs = millis();
+        if (millis() - started > WEB_SEND_TIMEOUT_MS) { server.client().stop(); return; }
         size_t n = min(CHUNK, total - sentLen);
         memcpy_P(buf, body + sentLen, n);
         size_t offset = 0;
@@ -1173,7 +1181,7 @@ void sendChunked_P(int code, const char* contentType, const char* body)
             if (written == 0)
             {
                 if (!server.client().connected()) return;
-                if (millis() - started > 15000UL) { server.client().stop(); return; }
+                if (millis() - started > WEB_SEND_TIMEOUT_MS) { server.client().stop(); return; }
                 delay(2);
                 continue;
             }
@@ -1190,9 +1198,20 @@ void handleRoot()
     // Cosmetic + mobile-optimized settings page. The page is stored in flash (PROGMEM)
     // and sent in small chunks, so it does not consume the ESP8266 heap.
     if (!webAuthOk()) { server.requestAuthentication(); return; }
-    server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
-    server.sendHeader("Pragma", "no-cache");
-    server.sendHeader("Expires", "0");
+    static const char PAGE_ETAG[] = "\"" FIRMWARE_VERSION " " __DATE__ " " __TIME__ "\"";
+    // The page is static for a given build. Revalidate it with an ETag so a normal
+    // visit returns a tiny 304 instead of streaming ~28 KB again: that large
+    // transfer is what blocks the display loop and makes the clock look frozen.
+    if (server.header("If-None-Match") == PAGE_ETAG)
+    {
+        server.sendHeader("Cache-Control", "private, no-cache, must-revalidate");
+        server.sendHeader("ETag", PAGE_ETAG);
+        server.keepAlive(false);
+        server.send(304, "text/plain", "");
+        return;
+    }
+    server.sendHeader("Cache-Control", "private, no-cache, must-revalidate");
+    server.sendHeader("ETag", PAGE_ETAG);
     server.keepAlive(false);   // free the socket after the page; avoids ESP8266 keep-alive stalls
     sendChunked_P(200, "text/html", ROOT_PAGE);
 }
