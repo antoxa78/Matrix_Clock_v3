@@ -25,6 +25,7 @@
 #include <EEPROM.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPClient.h>
+#include <DNSServer.h>
 #include <stdarg.h>
 #include "WebPage.h"
 #include "WebCss.h"
@@ -36,7 +37,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.24"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.26"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -156,7 +157,7 @@ unsigned short helpArrPos[anzMAX * 8];
 int z_PosX = 0;                            
 int d_PosX = 0;                            
 bool showMsg = false;                                // a message is scrolling across the display
-char msg[120] = "";
+char msg[160] = "";
 uint8_t msgStep = 2;                                 // current message scroll speed (px per 50ms tick)
 bool msgEatActive = false;                             // a display-change transition is running
 bool msgEatPending = false;                            // a message waits for the transition to finish
@@ -171,7 +172,7 @@ uint8_t transitionBagCount = 0;
 uint8_t lastRandomType = 0;
 uint32_t rngState = 0x9E3779B9UL;
 #define MSG_QUEUE_SIZE 3
-char msgQueue[MSG_QUEUE_SIZE][120];
+char msgQueue[MSG_QUEUE_SIZE][160];
 uint8_t msgQueueStep[MSG_QUEUE_SIZE];
 uint8_t msgQueueCount = 0;
 unsigned long apMsgUntil = 0;                        // AP-mode message keeps repeating until this time
@@ -242,7 +243,7 @@ bool alertAnimActive = false;
 uint8_t alertAnimType = ALERT_ANIM_NONE;
 unsigned long alertAnimStartMs = 0;
 uint8_t alertAnimSpeed = 2;
-char alertAnimMsg[120] = "";
+char alertAnimMsg[160] = "";
 const unsigned long ALERT_ANIM_MS = 2500UL;   // 2.5 s at the 50 ms frame rate
 bool weatherAlertActive = false;              // rain/heat warning owns the display
 bool weatherAlertMsgActive = false;           // the warning text itself is scrolling
@@ -360,6 +361,8 @@ struct DateTime {
 Ticker tckr;
 // A UDP instance to let us send and receive packets over UDP
 WiFiUDP udp;
+// Captive-portal DNS: in AP mode every hostname resolves to the clock's AP IP.
+DNSServer dnsServer;
 
 
 //months
@@ -570,6 +573,70 @@ unsigned short const font2[96][9] = { { 0x07, 0x00, 0x00, 0x00, 0x00, 0x00,
         { 0x07, 0x0c, 0x02, 0x02, 0x01, 0x02, 0x02, 0x0c, 0x00 },   // 0x7d, }
         { 0x07, 0x08, 0x15, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00 },   // 0x7e, ~
         { 0x07, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x00 }    // 0x7f, DEL
+};
+
+//************************Message Icons*****************************************************************************
+// 7x7 icons, bit 6 = leftmost pixel. They share the 7-pixel cap height of the
+// 5x7 font, so they sit naturally in a scrolling message. The 8th LED row stays
+// blank, exactly like the font. A message embeds an icon as one byte:
+// (MSG_ICON_MARKER + icon id). Inline icons advance the message cursor by 9 px:
+// one blank column, seven icon columns, one blank column.
+enum {
+    ICON_CALENDAR = 0,
+    ICON_CLOCK,
+    ICON_THERMOMETER,
+    ICON_HUMIDITY,
+    ICON_RAIN,
+    ICON_SUN,
+    ICON_CLOUD,
+    ICON_WIND,
+    ICON_GAUGE,
+    ICON_SUNRISE,
+    ICON_SUNSET,
+    ICON_UMBRELLA,
+    ICON_SNOWFLAKE,
+    ICON_LIGHTNING,
+    ICON_MOON,
+    ICON_WARNING,
+    ICON_CANDLES,
+    ICON_STAR,
+    ICON_CAKE,
+    ICON_GIFT,
+    ICON_PIN,
+    ICON_SIGNAL,
+    ICON_DOWNLOAD,
+    ICON_UPLOAD,
+    ICON_COUNT
+};
+#define MSG_ICON_MARKER 0x80
+#define MSG_ICON_WIDTH  9
+#define MSG_ICON(id)    ((int) (MSG_ICON_MARKER + (uint8_t) (id)))
+
+static const uint8_t iconBitmaps[ICON_COUNT][7] PROGMEM = {
+    { 0x22, 0x7F, 0x41, 0x7F, 0x55, 0x55, 0x7F },   // calendar
+    { 0x1C, 0x2A, 0x49, 0x4D, 0x41, 0x22, 0x1C },   // clock
+    { 0x18, 0x18, 0x1A, 0x1A, 0x1A, 0x3C, 0x3C },   // thermometer
+    { 0x08, 0x1C, 0x1C, 0x3E, 0x3E, 0x3E, 0x1C },   // humidity drop
+    { 0x1C, 0x3E, 0x7F, 0x00, 0x2A, 0x14, 0x2A },   // rain cloud
+    { 0x08, 0x22, 0x1C, 0x7F, 0x1C, 0x22, 0x08 },   // sun
+    { 0x00, 0x1C, 0x3E, 0x7F, 0x7F, 0x3E, 0x00 },   // cloud
+    { 0x40, 0x5E, 0x42, 0x4C, 0x40, 0x40, 0x40 },   // windsock
+    { 0x1C, 0x26, 0x45, 0x49, 0x41, 0x22, 0x1C },   // pressure gauge
+    { 0x00, 0x08, 0x1C, 0x3E, 0x7F, 0x00, 0x00 },   // sunrise
+    { 0x00, 0x00, 0x7F, 0x3E, 0x1C, 0x08, 0x00 },   // sunset
+    { 0x08, 0x3E, 0x7F, 0x7F, 0x08, 0x08, 0x1C },   // umbrella
+    { 0x49, 0x2A, 0x14, 0x7F, 0x14, 0x2A, 0x49 },   // snowflake
+    { 0x06, 0x0C, 0x18, 0x3E, 0x0C, 0x18, 0x30 },   // lightning
+    { 0x1C, 0x30, 0x60, 0x60, 0x60, 0x30, 0x1C },   // moon
+    { 0x08, 0x14, 0x2A, 0x2A, 0x41, 0x49, 0x7F },   // warning triangle
+    { 0x36, 0x36, 0x14, 0x14, 0x14, 0x14, 0x7F },   // Shabbat candles
+    { 0x08, 0x14, 0x22, 0x7F, 0x22, 0x14, 0x08 },   // Star of David
+    { 0x22, 0x14, 0x3E, 0x2A, 0x7F, 0x2A, 0x7F },   // birthday cake
+    { 0x36, 0x3E, 0x7F, 0x49, 0x49, 0x49, 0x7F },   // gift
+    { 0x1C, 0x22, 0x49, 0x49, 0x22, 0x1C, 0x08 },   // location pin
+    { 0x00, 0x02, 0x0A, 0x0A, 0x4A, 0x4A, 0x4A },   // signal bars
+    { 0x08, 0x08, 0x08, 0x08, 0x1C, 0x2A, 0x7F },   // download
+    { 0x08, 0x1C, 0x2A, 0x08, 0x08, 0x08, 0x7F }    // upload
 };
 //************************Auto Connect**************************************************************************
 const char* passHidden(const char* pass)   // never log the WiFi password in clear text
@@ -952,6 +1019,7 @@ bool webAuthOk()   // optional HTTP Basic auth: enabled only when a web password
 }
 //**************************************************************************************************
 void startMsg(const char* text, uint8_t step = 2);   // forward decl, defined below
+void startMsgIcon(uint8_t icon, const char* text, uint8_t step = 2);
 void max7219_set_brightness(unsigned short br);
 void startMsgEatTransition(bool pending, uint8_t forcedType = 0xFF);
 bool displayHasPixels();
@@ -982,7 +1050,9 @@ void startAP()   // start fallback AP so the settings page stays reachable witho
         return;    }
     apActive = true;
     apMsgUntil = millis() + 30000UL;   // keep showing the setup hint for 30 seconds
-    startMsg("SETUP MODE AP 192.168.4.1");
+    dnsServer.stop();
+    dnsServer.start(53, "*", WiFi.softAPIP());   // captive portal: every name -> 192.168.4.1
+    startMsgIcon(ICON_SIGNAL, "SETUP MODE AP 192.168.4.1");
     logLine("AP started: MatrixClock-Setup / http://%s",
             WiFi.softAPIP().toString().c_str());
 }
@@ -991,6 +1061,7 @@ void stopAP()    // stop fallback AP once the router connection works again
 {
     if (!apActive) return;
     apActive = false;
+    dnsServer.stop();
     WiFi.setAutoReconnect(true);    // normal reconnect behavior once the router is back
     // Shut the softAP down a few seconds later: switching the opmode in the same
     // instant the station connection completes can crash the SDK (observed: reset
@@ -1015,8 +1086,18 @@ void enterAPUpdateMode()   // switch to the setup AP so a weak router link can't
     apMsgUntil = millis() + 3600000UL;   // keep the hint message for an hour
     server.close();
     server.begin();   // rebind the web server to the AP interface
-    startMsg("AP UPDATE 192.168.4.1");
+    startMsgIcon(ICON_UPLOAD, "AP UPDATE 192.168.4.1");
     logLine("AP update mode: IP=%s", WiFi.softAPIP().toString().c_str());
+}
+//**************************************************************************************************
+void buildIconMsg(char* out, size_t outSize, uint8_t icon, const char* text)
+{
+    if (outSize == 0) return;
+    if (outSize == 1) { out[0] = 0; return; }
+    if (icon >= ICON_COUNT) icon = ICON_WARNING;
+    out[0] = (char) (MSG_ICON_MARKER + icon);
+    strncpy(out + 1, text, outSize - 2);
+    out[outSize - 1] = 0;
 }
 //**************************************************************************************************
 void startMsgNow(const char* text, uint8_t step, bool useTransition = true)
@@ -1035,6 +1116,13 @@ void startMsgNow(const char* text, uint8_t step, bool useTransition = true)
     max7219_set_brightness(settings.brightness);
     z_PosX = 0;
     d_PosX = -8;
+}
+
+void startMsgNowIcon(uint8_t icon, const char* text, uint8_t step, bool useTransition = true)
+{
+    char b[sizeof(msg)];
+    buildIconMsg(b, sizeof b, icon, text);
+    startMsgNow(b, step, useTransition);
 }
 
 void startNextQueuedMsg()
@@ -1076,17 +1164,24 @@ void startMsg(const char* text, uint8_t step)   // scroll a message; queue up to
     msgQueueStep[msgQueueCount] = step;
     msgQueueCount++;
 }
+
+void startMsgIcon(uint8_t icon, const char* text, uint8_t step)
+{
+    char b[sizeof(msg)];
+    buildIconMsg(b, sizeof b, icon, text);
+    startMsg(b, step);
+}
 //**************************************************************************************************
 void startNtpMessage(tm* tt)   // show the ping correction and the synced time
 {
     if (tt == NULL)
     {
-        startMsg("NTP SYNC FAILED");
+        startMsgIcon(ICON_WARNING, "NTP SYNC FAILED");
         return;
     }
     char b[80];
-    snprintf(b, sizeof b, "NTP OK!! PING %luMS ADJ %luMS %02d:%02d",
-             ntpLastRttMs, ntpLastTransitMs, tt->tm_hour, tt->tm_min);
+    snprintf(b, sizeof b, "%cNTP OK!! PING %luMS ADJ %luMS %02d:%02d",
+             MSG_ICON(ICON_CLOCK), ntpLastRttMs, ntpLastTransitMs, tt->tm_hour, tt->tm_min);
     startMsg(b);
 }
 //**************************************************************************************************
@@ -1862,22 +1957,31 @@ void handleSave()
     max7219_set_brightness(settings.brightness);   // apply immediately after Save
     Serial.printf("Settings saved, SSID:%s PSW:%s WPAUTH:%s\r\n", settings.ssid, passHidden(settings.pass), settings.webPass[0] ? "set" : "none");
     String page;
-    page.reserve(900);
+    page.reserve(1800);
     page = "<!DOCTYPE html><html><head><meta charset=utf-8>"
            "<meta name=viewport content='width=device-width,initial-scale=1'>"
-           "<meta name=theme-color content='#0a0d0b'>"
-           "<meta http-equiv=\"refresh\" content=\"";
-    page += wifiChanged ? "20" : "2";
-    page += "; url=/\"><title>Saved</title><style>"
+           "<meta name=theme-color content='#0a0d0b'>";
+    if (!wifiChanged)
+        page += "<meta http-equiv=\"refresh\" content=\"2; url=/\">";
+    page += "<title>Saved</title><style>"
             "body{margin:0;background:#0a0d0b;color:#e8f0ec;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;text-align:center;padding:72px 24px;min-height:100vh;box-sizing:border-box}"
             ".ok{font-size:44px;color:#22e07a;text-shadow:0 0 20px rgba(34,224,122,.45)}"
             "h2{color:#22e07a;font-size:20px;margin:14px 0 6px}"
-            "p{color:#7c8c84;font-size:14px}"
+            "p{color:#7c8c84;font-size:14px}a{color:#22e07a;text-decoration:none}"
             "</style></head><body>"
             "<div class=ok>&#10003;</div>"
             "<h2>Settings saved</h2><p>";
     page += wifiChanged ? "WiFi changed. Reconnecting..." : "Applied. Returning to settings...";
-    page += "</p></body></html>";
+    page += "</p>";
+    if (wifiChanged)
+        page += "<p id=ap>If the clock starts its setup AP, open <a href=\"http://192.168.4.1/\">http://192.168.4.1/</a>.</p>"
+                "<script>"
+                "function w(n){fetch('/status',{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(){location.href='/';}).catch(function(){"
+                "fetch('http://192.168.4.1/apcheck',{cache:'no-store'}).then(function(r){return r.text();}).then(function(t){if(t.indexOf('MatrixClock')<0)throw 0;location.href='http://192.168.4.1/';}).catch(function(){"
+                "if(n>0)setTimeout(function(){w(n-1);},2000);else document.getElementById('ap').innerHTML='Clock did not return. Connect to <b>MatrixClock-Setup</b> and open <a href=\"http://192.168.4.1/\">http://192.168.4.1/</a>.';});});}"
+                "setTimeout(function(){w(45);},3000);"
+                "</script>";
+    page += "</body></html>";
     sendChunked(200, "text/html", page);
     server.client().stop();   // close TCP cleanly so the browser gets the full response
     if (wifiChanged)
@@ -1891,6 +1995,8 @@ void handleSave()
 void handleUpdatePage()
 {
     if (!webAuthOk()) { server.requestAuthentication(); return; }
+    // Keep double quotes out of this raw string: the Arduino prototype generator
+    // (ctags 5.8) does not understand C++ raw strings.
     static const char UPDATE_PAGE[] PROGMEM = R"HTML(
 <!DOCTYPE html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>
 <meta name=theme-color content='#0a0d0b'><title>MatrixClock Update</title><style>
@@ -1928,7 +2034,7 @@ f.addEventListener('submit',function(e){
  xhr.onload=function(){
   var r={ok:false,msg:'Invalid response from clock'};
   try{r=JSON.parse(xhr.responseText);}catch(err){}
-  if(r.ok){fill.style.width='100%';fill.className='fill';st.className='status ok';st.textContent='Firmware updated. Waiting for restart...';function wc(n){fetch('/status',{cache:'no-store'}).then(function(x){if(!x.ok)throw 0;return x.json();}).then(function(){location.href='/';}).catch(function(){if(n>0)setTimeout(function(){wc(n-1);},2000);else{st.className='status err';st.textContent='Clock did not return. Open the settings page manually.';}});}setTimeout(function(){wc(30);},3000);}
+  if(r.ok){fill.style.width='100%';fill.className='fill';st.className='status ok';st.textContent='Firmware updated. Waiting for restart...';function wc(n){fetch('/status',{cache:'no-store'}).then(function(x){if(!x.ok)throw 0;return x.json();}).then(function(){location.href='/';}).catch(function(){fetch('http://192.168.4.1/apcheck',{cache:'no-store'}).then(function(r){return r.text();}).then(function(t){if(t.indexOf('MatrixClock')<0)throw 0;location.href='http://192.168.4.1/';}).catch(function(){if(n>0)setTimeout(function(){wc(n-1);},2000);else{st.className='status err';st.innerHTML='Clock did not return. Connect to <b>MatrixClock-Setup</b> and open <a href=http://192.168.4.1/>http://192.168.4.1/</a>.';}});});}setTimeout(function(){wc(45);},3000);}
   else{fill.className='fill err';st.className='status err';st.textContent='Update failed: '+r.msg;btn.disabled=false;fw.disabled=false;}
  };
  xhr.onerror=function(){fill.className='fill err';st.className='status err';st.textContent='Connection lost. Check the clock and try again.';btn.disabled=false;fw.disabled=false;};
@@ -1957,7 +2063,8 @@ void handleAPUpdate()
         "<p style='color:#7c8c84;font-size:15px;line-height:1.6'>Connect your phone or computer to the Wi-Fi network<br>"
         "<b style='color:#e8f0ec'>MatrixClock-Setup</b> with password <b style='color:#e8f0ec'>";
     page += htmlEscape(settings.apPass);
-    page += "</b><br>then open <b style='color:#22e07a'>http://192.168.4.1/update</b></p>"
+    page += "</b><br>then open <a href='http://192.168.4.1/update' style='color:#22e07a'>http://192.168.4.1/update</a><br>"
+        "It should open automatically after you join the setup Wi-Fi.</p>"
         "</body></html>";
     server.send(200, "text/html", page);
     apUpdatePending = millis() + 1500UL;   // switch after the response is flushed
@@ -1967,6 +2074,7 @@ void handleReboot()
 {
     if (!webAuthOk()) { server.requestAuthentication(); return; }
     if (Update.isRunning()) { server.send(503, "text/plain", "Update in progress"); return; }
+    // Same raw-string rule as UPDATE_PAGE above: no double quotes inside.
     static const char REBOOT_PAGE[] PROGMEM = R"HTML(<!DOCTYPE html><html><head><meta charset=utf-8>
 <meta name=viewport content='width=device-width,initial-scale=1'>
 <meta name=theme-color content='#0a0d0b'><title>MatrixClock Restart</title><style>
@@ -1975,16 +2083,43 @@ h2{color:#22e07a;font-size:20px;margin:14px 0 6px}p{color:#7c8c84;font-size:14px
 a{color:#22e07a;text-decoration:none}
 </style></head><body><h2>Restarting the clock...</h2>
 <p id=st>Waiting for the clock to come back.</p>
-<p><a href="/">Open settings</a></p>
+<p><a href='/'>Open settings</a> &middot; <a href='http://192.168.4.1/'>http://192.168.4.1/</a></p>
 <script>
-function w(n){fetch('/status',{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(){location.href='/';}).catch(function(){if(n>0)setTimeout(function(){w(n-1);},2000);else document.getElementById('st').textContent='Clock did not return. Open the settings page manually.';});}
-setTimeout(function(){w(30);},3000);
+function w(n){fetch('/status',{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(){location.href='/';}).catch(function(){
+ fetch('http://192.168.4.1/apcheck',{cache:'no-store'}).then(function(r){return r.text();}).then(function(t){if(t.indexOf('MatrixClock')<0)throw 0;location.href='http://192.168.4.1/';}).catch(function(){
+  if(n>0)setTimeout(function(){w(n-1);},2000);
+  else document.getElementById('st').innerHTML='Clock did not return. Connect to <b>MatrixClock-Setup</b> and open <a href=http://192.168.4.1/>http://192.168.4.1/</a>.';
+ });
+});}
+setTimeout(function(){w(45);},3000);
 </script></body></html>)HTML";
     server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
     server.sendHeader("Pragma", "no-cache");
     server.keepAlive(false);
     sendChunked_P(200, "text/html", REBOOT_PAGE);
     otaRebootAt = millis() + 800UL;
+}
+
+void handleAPCheck()   // CORS-friendly identity check used by the reboot/save pages
+{
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "text/plain", "MatrixClock");
+}
+
+void handleCaptivePortal()   // AP mode: send captive-portal probes (and unknown paths) to the clock
+{
+    if (apActive)
+    {
+        String url = "http://";
+        url += WiFi.softAPIP().toString();
+        url += apUpdateMode ? "/update" : "/";
+        server.sendHeader("Location", url, true);
+        server.sendHeader("Cache-Control", "no-store");
+        server.send(302, "text/plain", "");
+    }
+    else
+        server.send(404, "text/plain", "Not found");
 }
 
 void handleUpdateUpload()
@@ -2084,7 +2219,7 @@ void handleUpdateDone()
         msgQueueCount = 0;
         alertAnimActive = false;
         apMsgUntil = 0;
-        startMsgNow("UPDATE SUCCESSFUL", 2, false);
+        startMsgNowIcon(ICON_DOWNLOAD, "UPDATE SUCCESSFUL", 2, false);
         otaRebootAt = millis() + 8000UL;
         server.keepAlive(false);
         server.send(200, "application/json",
@@ -2246,6 +2381,18 @@ const char* windDirName(int deg)
     return dirs[idx];
 }
 
+uint8_t weatherConditionIcon(int code)   // WMO weather code -> message icon
+{
+    bool night = (MEZ.std12 < 6 || MEZ.std12 >= 20);
+    if (code == 0) return night ? ICON_MOON : ICON_SUN;
+    if (code <= 2) return night ? ICON_MOON : ICON_SUN;
+    if (code == 3 || code == 45 || code == 48) return ICON_CLOUD;
+    if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return ICON_RAIN;
+    if ((code >= 71 && code <= 77) || code == 85 || code == 86) return ICON_SNOWFLAKE;
+    if (code >= 95) return ICON_LIGHTNING;
+    return ICON_CLOUD;
+}
+
 // Format the optional chance fragment for rain messages. A 0% chance is
 // left out entirely so the forecast messages only mention it when relevant.
 void formatRainChance(char* out, size_t outSize, int chance)
@@ -2267,29 +2414,32 @@ void buildWeatherDetail(char* out, size_t outSize, uint8_t page)
             else strcpy(hi, "--");
             if (weatherLowValid) snprintf(lo, sizeof lo, "%.1f ~C", weatherLowC);
             else strcpy(lo, "--");
-            snprintf(out, outSize, "TODAY HIGH TEMP: %s ; LOW TEMP: %s", hi, lo);
+            snprintf(out, outSize, "%cTODAY HIGH TEMP: %s ; LOW TEMP: %s",
+                     MSG_ICON(ICON_THERMOMETER), hi, lo);
             break;
         }
         case 1:
-            snprintf(out, outSize, "SUNRISE: %s ; SUNSET: %s",
-                     weatherSunrise[0] ? weatherSunrise : "--:--",
-                     weatherSunset[0] ? weatherSunset : "--:--");
+            snprintf(out, outSize, "%cSUNRISE: %s ; %cSUNSET: %s",
+                     MSG_ICON(ICON_SUNRISE), weatherSunrise[0] ? weatherSunrise : "--:--",
+                     MSG_ICON(ICON_SUNSET), weatherSunset[0] ? weatherSunset : "--:--");
             break;
         case 2:
-            snprintf(out, outSize, "WIND NOW: %.0f KM/H %s ; UV MAX: %.0f",
-                     weatherWindKmh, windDirName(weatherWindDir), weatherUv);
+            snprintf(out, outSize, "%cWIND NOW: %.0f KM/H %s ; %cUV MAX: %.0f",
+                     MSG_ICON(ICON_WIND), weatherWindKmh, windDirName(weatherWindDir),
+                     MSG_ICON(ICON_SUN), weatherUv);
             break;
         case 3:
-            snprintf(out, outSize, "PRESSURE: %.0f HPA ; TODAY RAIN CHANCE: %d%%",
-                     weatherPressureHpa, weatherDailyProb);
+            snprintf(out, outSize, "%cPRESSURE: %.0f HPA ; %cTODAY RAIN CHANCE: %d%%",
+                     MSG_ICON(ICON_GAUGE), weatherPressureHpa, MSG_ICON(ICON_UMBRELLA), weatherDailyProb);
             break;
         default:
             if (weatherPrecipProb > 0)
-                snprintf(out, outSize, "RAIN 1H %.1f MM,  2H %.1f MM,  RAIN CHANCE: %d%%",
-                         weatherRain1h, weatherRain2h, weatherPrecipProb);
+                snprintf(out, outSize, "%cRAIN 1H %.1f MM,  2H %.1f MM,  %cRAIN CHANCE: %d%%",
+                         MSG_ICON(ICON_RAIN), weatherRain1h, weatherRain2h,
+                         MSG_ICON(ICON_UMBRELLA), weatherPrecipProb);
             else
-                snprintf(out, outSize, "RAIN 1H %.1f MM,  2H %.1f MM",
-                         weatherRain1h, weatherRain2h);
+                snprintf(out, outSize, "%cRAIN 1H %.1f MM,  2H %.1f MM",
+                         MSG_ICON(ICON_RAIN), weatherRain1h, weatherRain2h);
             break;
     }
 }
@@ -2779,11 +2929,14 @@ void holidayTick()   // once per minute: fetch this month's holidays and greet o
 
     const char* text = holidayGreeting(type);
     uint8_t anim = holidayAnimation(type);
+    uint8_t icon = (type == HOLIDAY_NEW_YEAR || type == HOLIDAY_CHRISTMAS) ? ICON_GIFT : ICON_STAR;
+    char msg[96];
+    buildIconMsg(msg, sizeof msg, icon, text);
     Serial.printf("Holiday: %s\r\n", text);
     if (anim != ALERT_ANIM_NONE)
-        startAlertAnimation(anim, text, 2);
+        startAlertAnimation(anim, msg, 2);
     else
-        startMsg(text, 2);
+        startMsg(msg, 2);
 }
 
 void birthdayTick()   // once per minute: greet family birthdays
@@ -2830,9 +2983,9 @@ void birthdayTick()   // once per minute: greet family birthdays
             if (settings.birthdays[i].year && fullYear >= settings.birthdays[i].year)
                 age = fullYear - settings.birthdays[i].year;
             if (age > 0)
-                snprintf(msg, sizeof msg, "HAPPY BIRTHDAY %s! %d YEARS OLD", settings.birthdays[i].name, age);
+                snprintf(msg, sizeof msg, "%cHAPPY BIRTHDAY %s! %d YEARS OLD", MSG_ICON(ICON_CAKE), settings.birthdays[i].name, age);
             else
-                snprintf(msg, sizeof msg, "HAPPY BIRTHDAY %s!", settings.birthdays[i].name);
+                snprintf(msg, sizeof msg, "%cHAPPY BIRTHDAY %s!", MSG_ICON(ICON_CAKE), settings.birthdays[i].name);
             if (settings.birthdayAnim && firstBirthday)
                 startAlertAnimation(ALERT_ANIM_BIRTHDAY, msg, 2);
             else
@@ -2866,9 +3019,9 @@ void birthdayTick()   // once per minute: greet family birthdays
     if (settings.birthdays[found].year && fullYear >= settings.birthdays[found].year)
         age = fullYear - settings.birthdays[found].year;
     if (age > 0)
-        snprintf(msg, sizeof msg, "HAPPY BIRTHDAY %s! %d YEARS OLD", settings.birthdays[found].name, age);
+        snprintf(msg, sizeof msg, "%cHAPPY BIRTHDAY %s! %d YEARS OLD", MSG_ICON(ICON_CAKE), settings.birthdays[found].name, age);
     else
-        snprintf(msg, sizeof msg, "HAPPY BIRTHDAY %s!", settings.birthdays[found].name);
+        snprintf(msg, sizeof msg, "%cHAPPY BIRTHDAY %s!", MSG_ICON(ICON_CAKE), settings.birthdays[found].name);
     if (settings.birthdayAnim)
         startAlertAnimation(ALERT_ANIM_BIRTHDAY, msg, 2);
     else
@@ -2912,10 +3065,11 @@ void shabbatMinuteTick(uint16_t nowMin)   // called once per minute from the 1s 
         if (untilCandle <= 0 && untilCandle >= -5 && lastCandleKey != dateKey)
         {
             lastCandleKey = dateKey;
+            buildIconMsg(buf, sizeof buf, ICON_CANDLES, "SHABBAT SHALOM");
             if (settings.shabbatAnim)
-                startAlertAnimation(ALERT_ANIM_CANDLES, "SHABBAT SHALOM", 2);
+                startAlertAnimation(ALERT_ANIM_CANDLES, buf, 2);
             else
-                startMsg("SHABBAT SHALOM", 2);
+                startMsg(buf, 2);
         }
         else if (untilCandle > 0 && untilCandle <= settings.shabbatLead)
         {
@@ -2929,7 +3083,8 @@ void shabbatMinuteTick(uint16_t nowMin)   // called once per minute from the 1s 
             if (!leadMsgSent || untilCandle % settings.shabbatFreq == 0 || untilCandle == settings.shabbatLead)
             {
                 leadMsgSent = true;
-                snprintf(buf, sizeof buf, "SHABBAT CANDLES %02d:%02d", shabbatCandleMin / 60, shabbatCandleMin % 60);
+                snprintf(buf, sizeof buf, "%cSHABBAT CANDLES %02d:%02d",
+                         MSG_ICON(ICON_CANDLES), shabbatCandleMin / 60, shabbatCandleMin % 60);
                 startMsg(buf, 2);
             }
         }
@@ -2940,10 +3095,11 @@ void shabbatMinuteTick(uint16_t nowMin)   // called once per minute from the 1s 
         if (untilEnd <= 0 && untilEnd >= -5 && lastEndKey != dateKey)
         {
             lastEndKey = dateKey;
+            buildIconMsg(buf, sizeof buf, ICON_STAR, "Have A Nice Week ;-)");
             if (settings.shabbatAnim)
-                startAlertAnimation(ALERT_ANIM_SHABBAT_END, "Have A Nice Week ;-)", 2);
+                startAlertAnimation(ALERT_ANIM_SHABBAT_END, buf, 2);
             else
-                startMsg("Have A Nice Week ;-)", 2);
+                startMsg(buf, 2);
         }
         else if (untilEnd > 0)
         {
@@ -2956,7 +3112,8 @@ void shabbatMinuteTick(uint16_t nowMin)   // called once per minute from the 1s 
             if (!endMsgSent || untilEnd % settings.shabbatFreq == 0 || untilEnd == settings.shabbatLead)
             {
                 endMsgSent = true;
-                snprintf(buf, sizeof buf, "SHABBAT ENDS %02d:%02d", shabbatHavdalahMin / 60, shabbatHavdalahMin % 60);
+                snprintf(buf, sizeof buf, "%cSHABBAT ENDS %02d:%02d",
+                         MSG_ICON(ICON_STAR), shabbatHavdalahMin / 60, shabbatHavdalahMin % 60);
                 startMsg(buf, 2);
             }
         }
@@ -3003,6 +3160,7 @@ tm* connectNTP() { // if response from NTP was successful return *tm else return
     {
         yield();
         server.handleClient();
+        if (apActive) dnsServer.processNextRequest();
         cb = udp.parsePacket();
         if (cb > 0) break;
     }
@@ -3418,6 +3576,24 @@ void char2Arr(unsigned short ch, int PosX, short PosY) { //characters into arr
     }
 }
 
+// Draw a 7x7 message icon. x is the leftmost pixel, y the top row. The caller
+// anchors it exactly like a font cell: one blank column, seven icon columns.
+void drawIcon(uint8_t id, int x, int y)
+{
+    if (id >= ICON_COUNT) return;
+    for (uint8_t row = 0; row < 7; row++) {
+        int py = y + row;
+        if (py < 0 || py > 7) continue;
+        uint8_t bits = pgm_read_byte(&iconBitmaps[id][row]);
+        for (uint8_t col = 0; col < 7; col++) {
+            if (!(bits & (0x40 >> col))) continue;
+            int px = x - col;
+            if (px < 0 || px > (int) maxPosX) continue;
+            LEDarr[px >> 3][py] |= (1 << (px & 7));
+        }
+    }
+}
+
 // Dither the already-drawn message towards transparent: level 0 = hidden, 16 = fully shown.
 void fadeMessage(uint8_t level)
 {
@@ -3663,6 +3839,7 @@ void drawColon(int baseX)   // separator; baseX is the same position char2Arr(':
 
 void drawDate(int posX)
 {
+    drawIcon(ICON_CALENDAR, posX + 8, 0);   // calendar leads the date
     char2Arr(' ', posX + 5, 0);        //day of the week
     char2Arr(WT_arr[MEZ.WT][0], posX - 1, 0);
     char2Arr(WT_arr[MEZ.WT][1], posX - 7, 0);
@@ -4676,7 +4853,7 @@ void setup() {
     clear_Display();
     refresh_display(); //take info into LEDarr
     if (rtc_osf())
-        startMsg("RTC LOST TIME - CHECK BATTERY", 2);
+        startMsgIcon(ICON_WARNING, "RTC LOST TIME - CHECK BATTERY", 2);
     tckr.attach(0.05, timer50ms);    // every 50 msec
     otaWatchdog.attach(1.0, otaWatchdogTick);   // revoke a permanently stalled OTA upload
     //////////////////////////////////
@@ -4714,6 +4891,8 @@ void setup() {
     server.on("/apupdate", HTTP_GET, handleAPUpdate);
     server.on("/reboot", HTTP_GET, handleReboot);
     server.on("/restart", HTTP_GET, handleReboot);
+    server.on("/apcheck", HTTP_GET, handleAPCheck);   // identity probe for the AP fallback redirect
+    server.onNotFound(handleCaptivePortal);   // AP mode: redirect captive-portal probes to 192.168.4.1
     server.collectHeaders("Accept-Encoding");   // needed to decide between gzip and raw assets
     server.begin();
     Serial.println("Web server started");
@@ -4758,6 +4937,7 @@ void loop() {
         yield();  // on the ESP8266, if the loop must run long operations (e.g. floating point math), call yield regularly so the 8266 keeps running in the background without rebooting or dropping the network.
         handleSerialCommand();
         server.handleClient();   // handle web settings page requests
+        if (apActive) dnsServer.processNextRequest();   // captive-portal lookups
         if (otaRebootAt != 0 && (long) (millis() - otaRebootAt) >= 0)
         {
             Serial.println("OTA: rebooting");
@@ -4928,47 +5108,62 @@ void loop() {
                             // clearly that the rain has stopped.
                             formatRainChance(chance, sizeof chance, weatherRainLastProb);
                             if (settings.weatherCityShow)
-                                snprintf(buf, sizeof buf, "RAIN ENDING  LAST: %.1f MM/h,  1H: %.1f MM/h,  %s%s  Temp: %.1f ~C, RH: %d %%  ",
-                                         weatherRainLastRate, weatherRainLast1h, chance, settings.weatherCity, temp, hum);
+                                snprintf(buf, sizeof buf, "%cRAIN ENDING  LAST: %.1f MM/h,  1H: %.1f MM/h,  %s%s  %cTemp: %.1f ~C, %cRH: %d %%  ",
+                                         MSG_ICON(ICON_RAIN), weatherRainLastRate, weatherRainLast1h, chance, settings.weatherCity,
+                                         MSG_ICON(ICON_THERMOMETER), temp, MSG_ICON(ICON_HUMIDITY), hum);
                             else
-                                snprintf(buf, sizeof buf, "RAIN ENDING  LAST: %.1f MM/h,  1H: %.1f MM/h,  %sTemp: %.1f ~C, RH: %d %%  ",
-                                         weatherRainLastRate, weatherRainLast1h, chance, temp, hum);
+                                snprintf(buf, sizeof buf, "%cRAIN ENDING  LAST: %.1f MM/h,  1H: %.1f MM/h,  %s%cTemp: %.1f ~C, %cRH: %d %%  ",
+                                         MSG_ICON(ICON_RAIN), weatherRainLastRate, weatherRainLast1h, chance,
+                                         MSG_ICON(ICON_THERMOMETER), temp, MSG_ICON(ICON_HUMIDITY), hum);
                         }
                         else if (rainNow || rainCodeNow)
                         {
                             formatRainChance(chance, sizeof chance, prob2h);
                             if (settings.weatherCityShow)
-                                snprintf(buf, sizeof buf, "RAIN WARNING !!!  NOW: %.1f MM/h,  1H: %.1f MM/h,  2H: %.1f MM/h,  %s%s  Temp: %.1f ~C, RH: %d %%  ",
-                                         precip, rain1h, rain2h, chance, settings.weatherCity, temp, hum);
+                                snprintf(buf, sizeof buf, "%cRAIN WARNING !!!  NOW: %.1f MM/h,  1H: %.1f MM/h,  2H: %.1f MM/h,  %s%s  %cTemp: %.1f ~C, %cRH: %d %%  ",
+                                         MSG_ICON(ICON_RAIN), precip, rain1h, rain2h, chance, settings.weatherCity,
+                                         MSG_ICON(ICON_THERMOMETER), temp, MSG_ICON(ICON_HUMIDITY), hum);
                             else
-                                snprintf(buf, sizeof buf, "RAIN WARNING !!!  NOW: %.1f MM/h,  1H: %.1f MM/h,  2H: %.1f MM/h,  %sTemp: %.1f ~C, RH: %d %%  ",
-                                         precip, rain1h, rain2h, chance, temp, hum);
+                                snprintf(buf, sizeof buf, "%cRAIN WARNING !!!  NOW: %.1f MM/h,  1H: %.1f MM/h,  2H: %.1f MM/h,  %s%cTemp: %.1f ~C, %cRH: %d %%  ",
+                                         MSG_ICON(ICON_RAIN), precip, rain1h, rain2h, chance,
+                                         MSG_ICON(ICON_THERMOMETER), temp, MSG_ICON(ICON_HUMIDITY), hum);
                         }
                         else
                         {
                             formatRainChance(chance, sizeof chance, prob2h);
                             if (settings.weatherCityShow)
-                                snprintf(buf, sizeof buf, "RAIN LIKELY  1H: %.1f MM/h,  2H: %.1f MM/h,  %s%s  Temp: %.1f ~C, RH: %d %%  ",
-                                         rain1h, rain2h, chance, settings.weatherCity, temp, hum);
+                                snprintf(buf, sizeof buf, "%cRAIN LIKELY  1H: %.1f MM/h,  2H: %.1f MM/h,  %s%s  %cTemp: %.1f ~C, %cRH: %d %%  ",
+                                         MSG_ICON(ICON_RAIN), rain1h, rain2h, chance, settings.weatherCity,
+                                         MSG_ICON(ICON_THERMOMETER), temp, MSG_ICON(ICON_HUMIDITY), hum);
                             else
-                                snprintf(buf, sizeof buf, "RAIN LIKELY  1H: %.1f MM/h,  2H: %.1f MM/h,  %sTemp: %.1f ~C, RH: %d %%  ",
-                                         rain1h, rain2h, chance, temp, hum);
+                                snprintf(buf, sizeof buf, "%cRAIN LIKELY  1H: %.1f MM/h,  2H: %.1f MM/h,  %s%cTemp: %.1f ~C, %cRH: %d %%  ",
+                                         MSG_ICON(ICON_RAIN), rain1h, rain2h, chance,
+                                         MSG_ICON(ICON_THERMOMETER), temp, MSG_ICON(ICON_HUMIDITY), hum);
                         }
                     }
                     else if (settings.heatWarn && temp >= heatLimit)
                     {
                         alertType = ALERT_ANIM_HEAT;
                         if (settings.weatherCityShow)
-                            snprintf(buf, sizeof buf, "HEAT WARNING: %.1f ~C  %s  Outside Temp: %.1f ~C , RH: %d %%", heatLimit, settings.weatherCity, temp, hum);
+                            snprintf(buf, sizeof buf, "%cHEAT WARNING: %.1f ~C  %s  Outside Temp: %c%.1f ~C , %cRH: %d %%",
+                                     MSG_ICON(ICON_SUN), heatLimit, settings.weatherCity,
+                                     MSG_ICON(ICON_THERMOMETER), temp, MSG_ICON(ICON_HUMIDITY), hum);
                         else
-                            snprintf(buf, sizeof buf, "HEAT WARNING: %.1f ~C  Outside Temp: %.1f ~C , RH: %d %%", heatLimit, temp, hum);
+                            snprintf(buf, sizeof buf, "%cHEAT WARNING: %.1f ~C  Outside Temp: %c%.1f ~C , %cRH: %d %%",
+                                     MSG_ICON(ICON_SUN), heatLimit,
+                                     MSG_ICON(ICON_THERMOMETER), temp, MSG_ICON(ICON_HUMIDITY), hum);
                     }
                     else if (settings.weather)
                     {
+                        uint8_t condition = weatherConditionIcon(wmoCode);
                         if (settings.weatherCityShow)
-                            snprintf(buf, sizeof buf, "%s  Outside Temp: %.1f ~C , RH: %d %%", settings.weatherCity, temp, hum);
+                            snprintf(buf, sizeof buf, "%c%c%s  %cOutside Temp: %.1f ~C , %cRH: %d %%",
+                                     MSG_ICON(condition), MSG_ICON(ICON_PIN), settings.weatherCity,
+                                     MSG_ICON(ICON_THERMOMETER), temp, MSG_ICON(ICON_HUMIDITY), hum);
                         else
-                            snprintf(buf, sizeof buf, "Outside Temp: %.1f ~C , RH: %d %%", temp, hum);
+                            snprintf(buf, sizeof buf, "%c%cOutside Temp: %.1f ~C , %cRH: %d %%",
+                                     MSG_ICON(condition), MSG_ICON(ICON_THERMOMETER), temp,
+                                     MSG_ICON(ICON_HUMIDITY), hum);
                     }
 
                     if (buf[0] == 0)
@@ -5015,7 +5210,7 @@ void loop() {
                     }
                 }
                 else if (settings.weather)
-                    startMsg("WEATHER FAIL");
+                    startMsgIcon(ICON_CLOUD, "WEATHER FAIL");
             }
         }
         if (f_tckr1s == true)        // flag 1sek
@@ -5060,7 +5255,7 @@ void loop() {
                 {
                     wifiReconnectCount++;
                     logLine("WiFi reconnect #%u", wifiReconnectCount);
-                    startMsg("Wi-Fi Connected");
+                    startMsgIcon(ICON_SIGNAL, "Wi-Fi Connected");
                     ntpSyncArm = true;
                     ntpSyncRequested = false;
                 }
@@ -5338,8 +5533,13 @@ void loop() {
                 d_PosX += msgStep;
                 int msgWidth = 0;
                 for (int mi = 0; msg[mi] != 0; mi++) {
-                    int k = (int)(unsigned char) msg[mi] - 32;
-                    msgWidth += (k >= 0 && k < 96) ? font1[k][0] : 4;   // non-ASCII bytes count as a space width (never index font1 OOB)
+                    uint8_t mc = (uint8_t) msg[mi];
+                    if (mc >= MSG_ICON_MARKER && mc < MSG_ICON_MARKER + ICON_COUNT)
+                        msgWidth += MSG_ICON_WIDTH;
+                    else {
+                        int k = (int) mc - 32;
+                        msgWidth += (k >= 0 && k < 96) ? font1[k][0] : 4;   // non-ASCII bytes count as a space width (never index font1 OOB)
+                    }
                 }
                 if (d_PosX > 31 + msgWidth + 8) {   // whole message has scrolled past
                     z_PosX = maxPosX;
@@ -5352,9 +5552,10 @@ void loop() {
                         weatherAlertActive = false;
                     }
                     if (otaRebootAt != 0 && otaUploadSuccess)
-                        startMsgNow("UPDATE SUCCESSFUL", 2, false);   // keep showing it until the reboot
+                        startMsgNowIcon(ICON_DOWNLOAD, "UPDATE SUCCESSFUL", 2, false);   // keep showing it until the reboot
                     else if (apActive && millis() < apMsgUntil)   // keep repeating the AP setup hint for 30 seconds
-                        startMsg(apUpdateMode ? "AP UPDATE 192.168.4.1" : "SETUP MODE AP 192.168.4.1");
+                        startMsgIcon(apUpdateMode ? ICON_UPLOAD : ICON_SIGNAL,
+                                     apUpdateMode ? "AP UPDATE 192.168.4.1" : "SETUP MODE AP 192.168.4.1");
                 }
             }
             else if (msgQueueCount > 0) {
@@ -5392,7 +5593,13 @@ void loop() {
                 if (drawMsg)
                 {
                     for (mi = 0; msg[mi] != 0; mi++) {
-                        int k = (int)(unsigned char) msg[mi] - 32;
+                        uint8_t mc = (uint8_t) msg[mi];
+                        if (mc >= MSG_ICON_MARKER && mc < MSG_ICON_MARKER + ICON_COUNT) {
+                            drawIcon(mc - MSG_ICON_MARKER, mx - 1, msgYOff);
+                            mx -= MSG_ICON_WIDTH;
+                            continue;
+                        }
+                        int k = (int) mc - 32;
                         if (k >= 0 && k < 96)
                             char2Arr(msg[mi], mx - 1, msgYOff);
                         mx -= (k >= 0 && k < 96) ? font1[k][0] : 4;   // step by the actual glyph width; non-ASCII bytes use a space width
