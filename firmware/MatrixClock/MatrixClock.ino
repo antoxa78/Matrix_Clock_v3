@@ -37,7 +37,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.26"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.28"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -579,8 +579,9 @@ unsigned short const font2[96][9] = { { 0x07, 0x00, 0x00, 0x00, 0x00, 0x00,
 // 7x7 icons, bit 6 = leftmost pixel. They share the 7-pixel cap height of the
 // 5x7 font, so they sit naturally in a scrolling message. The 8th LED row stays
 // blank, exactly like the font. A message embeds an icon as one byte:
-// (MSG_ICON_MARKER + icon id). Inline icons advance the message cursor by 9 px:
-// one blank column, seven icon columns, one blank column.
+// (MSG_ICON_MARKER + icon id). Inline icons advance the message cursor by 11 px:
+// one blank column, seven icon columns, three blank columns. The next glyph
+// adds its own leading blank, leaving a clear 4 px gap before the text.
 enum {
     ICON_CALENDAR = 0,
     ICON_CLOCK,
@@ -609,7 +610,7 @@ enum {
     ICON_COUNT
 };
 #define MSG_ICON_MARKER 0x80
-#define MSG_ICON_WIDTH  9
+#define MSG_ICON_WIDTH  11
 #define MSG_ICON(id)    ((int) (MSG_ICON_MARKER + (uint8_t) (id)))
 
 static const uint8_t iconBitmaps[ICON_COUNT][7] PROGMEM = {
@@ -3628,14 +3629,19 @@ struct DigitAnimState {
 };
 DigitAnimState digitAnim[6];
 
+// Shared 4x4 ordered-dither matrix for fade and wipe transitions.
+static const uint8_t digitDither4[4][4] = {
+    { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 }
+};
+
 uint8_t digitAnimFrames(uint8_t mode)   // number of 50 ms frames for one transition
 {
     switch (mode) {
-        case DIGIT_ANIM_ROLL: return 9;   // 450 ms
-        case DIGIT_ANIM_FLIP: return 8;   // 400 ms
-        case DIGIT_ANIM_WIPE: return 8;   // 400 ms
-        case DIGIT_ANIM_FADE: return 8;   // 400 ms
-        case DIGIT_ANIM_DROP: return 10;  // 500 ms
+        case DIGIT_ANIM_ROLL: return 11;  // 550 ms, roll with a landing squash
+        case DIGIT_ANIM_FLIP: return 10;  // 500 ms, card flip around the digit centre
+        case DIGIT_ANIM_WIPE: return 10;  // 500 ms, soft dithered wipe edge
+        case DIGIT_ANIM_FADE: return 12;  // 600 ms, fade out then fade in
+        case DIGIT_ANIM_DROP: return 10;  // 500 ms, drop with a landing squash
         default: return 1;
     }
 }
@@ -3699,6 +3705,22 @@ void blitRows(const uint8_t rows[8], int x0)
     }
 }
 
+// Compress a digit vertically around row 3. Rows are mapped forward and ORed,
+// so a squashed glyph keeps more detail than nearest-neighbour sampling.
+void scaleRowsVertical(const uint8_t src[8], uint8_t scale, uint8_t out[8])
+{
+    for (uint8_t y = 0; y < 8; y++) out[y] = 0;
+    for (uint8_t y = 0; y < 8; y++) {
+        int dest;
+        if (y < 3) dest = 3 - ((3 - (int) y) * scale) / 8;
+        else if (y > 3) dest = 3 + (((int) y - 3) * scale) / 8;
+        else dest = 3;
+        if (dest < 0) dest = 0;
+        if (dest > 7) dest = 7;
+        out[dest] |= src[y];
+    }
+}
+
 void drawDigitStatic(uint8_t val, int baseX, bool small)
 {
     uint8_t rows[8];
@@ -3718,69 +3740,103 @@ void drawDigitTransition(uint8_t idx, int baseX, bool small)
     glyphRows((uint8_t) (48 + a.newVal), small, 0, 0, newRows);
 
     if (mode == DIGIT_ANIM_ROLL) {
-        uint16_t off = (p * 8 + 128) >> 8;
-        int8_t oldDy = (settings.scrollDir == 0) ? -(int8_t) off : (int8_t) off;
-        int8_t newDy = (settings.scrollDir == 0) ? (int8_t) (8 - off) : (int8_t) (off - 8);
-        glyphRows((uint8_t) (48 + a.oldVal), small, 0, oldDy, oldRows);
-        glyphRows((uint8_t) (48 + a.newVal), small, 0, newDy, newRows);
-        for (uint8_t y = 0; y < 8; y++) out[y] = oldRows[y] | newRows[y];
-    } else if (mode == DIGIT_ANIM_FLIP) {
-        uint8_t half = a.total / 2;
-        int center = (settings.scrollDir == 0) ? 2 : 5;
-        uint8_t scale;
-        if (f < half) {
-            scale = (uint8_t) (((half - f) * 8) / half);   // 8 -> 2
-            for (uint8_t y = 0; y < 8; y++) {
-                int sy = center + (((int) y - center) * scale) / 8;
-                out[y] = (sy >= 0 && sy < 8) ? oldRows[sy] : 0;
-            }
+        if (f >= 8) {
+            // Landing squash: the digit reaches its slot, compresses, and settles.
+            uint8_t scale = (uint8_t) (6 + (f - 8));
+            if (scale > 8) scale = 8;
+            scaleRowsVertical(newRows, scale, out);
         } else {
-            scale = (uint8_t) (((f - half + 1) * 8) / half);   // 2 -> 8
-            for (uint8_t y = 0; y < 8; y++) {
-                int sy = center + (((int) y - center) * scale) / 8;
-                out[y] = (sy >= 0 && sy < 8) ? newRows[sy] : 0;
-            }
+            uint8_t off = f;   // 0..7 rows, one row per frame
+            int8_t oldDy = (settings.scrollDir == 0) ? -(int8_t) off : (int8_t) off;
+            int8_t newDy = (settings.scrollDir == 0) ? (int8_t) (8 - off) : (int8_t) (off - 8);
+            glyphRows((uint8_t) (48 + a.oldVal), small, 0, oldDy, oldRows);
+            glyphRows((uint8_t) (48 + a.newVal), small, 0, newDy, newRows);
+            for (uint8_t y = 0; y < 8; y++) out[y] = oldRows[y] | newRows[y];
         }
+    } else if (mode == DIGIT_ANIM_FLIP) {
+        // Card flip around the digit centre (row 3): the old digit folds to a
+        // single line, one edge-on frame, then the new digit unfolds from it.
+        // Rows are mapped forward and ORed, which preserves more of the glyph
+        // than sampling the destination row backwards.
+        uint8_t fold = a.total / 2;
+        uint8_t scale;
+        const uint8_t* src;
+        if (f < fold) {
+            scale = (uint8_t) (8 - 2 * f);   // 8, 6, 4, 2, 0
+            src = oldRows;
+        } else if (f == fold) {
+            scale = 0;
+            src = NULL;                      // edge-on frame
+        } else {
+            scale = (uint8_t) ((f - fold) * 2);   // 2, 4, 6, 8
+            src = newRows;
+        }
+        if (src)
+            scaleRowsVertical(src, scale, out);
+        else
+            for (uint8_t y = 0; y < 8; y++) out[y] = 0;
     } else if (mode == DIGIT_ANIM_WIPE) {
-        uint8_t reveal = (uint8_t) ((p * 8 + 128) >> 8);
+        // Soft wipe: the boundary row is dithered, so rows cross over gradually
+        // instead of switching in one hard step.
+        uint16_t pos = (uint16_t) p * 8;
+        uint8_t edge = (uint8_t) (pos >> 8);
+        uint8_t frac = (uint8_t) (pos & 0xFF);
         bool topDown = (settings.scrollDir == 0);
         for (uint8_t y = 0; y < 8; y++) {
-            bool useNew = topDown ? (y < reveal) : (y >= 8 - reveal);
-            out[y] = useNew ? newRows[y] : oldRows[y];
+            uint8_t ry = topDown ? y : (uint8_t) (7 - y);
+            if (ry < edge)
+                out[y] = newRows[y];
+            else if (ry > edge)
+                out[y] = oldRows[y];
+            else {
+                uint8_t row = 0;
+                for (uint8_t c = 0; c < 8; c++) {
+                    uint8_t bv = digitDither4[y & 3][c & 3];
+                    bool useNew = frac > (uint16_t) bv * 16;
+                    row |= (useNew ? newRows[y] : oldRows[y]) & (1 << c);
+                }
+                out[y] = row;
+            }
         }
     } else if (mode == DIGIT_ANIM_FADE) {
-        static const uint8_t bayer8[8][8] = {
-            { 0, 32,  8, 40,  2, 34, 10, 42 },
-            { 48, 16, 56, 24, 50, 18, 58, 26 },
-            { 12, 44,  4, 36, 14, 46,  6, 38 },
-            { 60, 28, 52, 20, 62, 30, 54, 22 },
-            {  3, 35, 11, 43,  1, 33,  9, 41 },
-            { 51, 19, 59, 27, 49, 17, 57, 25 },
-            { 15, 47,  7, 39, 13, 45,  5, 37 },
-            { 63, 31, 55, 23, 61, 29, 53, 21 }
-        };
+        // Fade the old digit out, then the new one in. A 4x4 ordered dither
+        // gives finer steps than the old 8x8 crossfade, and pixels shared by
+        // both digits stay lit so the shape does not flicker at the midpoint.
+        uint8_t half = a.total / 2;                 // 6 frames at 12 total
+        bool fadingIn = (f >= half - 1);
+        uint8_t level;
+        if (!fadingIn)
+            level = (uint8_t) ((uint16_t) f * 16 / (half - 1));                  // 0..12
+        else
+            level = (uint8_t) ((uint16_t) (f - (half - 1)) * 16 / (a.total - half));   // 0..16
         for (uint8_t y = 0; y < 8; y++) {
-            uint8_t row = 0;
+            uint8_t row = oldRows[y] & newRows[y];   // pixels in both digits stay lit
             for (uint8_t c = 0; c < 8; c++) {
-                uint8_t bv = bayer8[y][c];
-                if (settings.scrollDir != 0) bv = 63 - bv;
-                bool useNew = p > (uint16_t) (bv * 4);
-                uint8_t bit = (useNew ? newRows[y] : oldRows[y]) & (1 << c);
-                row |= bit;
+                uint8_t bv = digitDither4[y & 3][c & 3];
+                bool show = fadingIn ? (bv < level) : (bv >= level);
+                if (show)
+                    row |= (fadingIn ? newRows[y] : oldRows[y]) & (1 << c);
             }
             out[y] = row;
         }
     } else if (mode == DIGIT_ANIM_DROP) {
-        static const int8_t dropNewDn[10] = { -8, -7, -6, -4, -2, 0, 1, 0, 0, 0 };
-        static const int8_t dropOldDn[10] = {  0,  1,  2,  4,  6, 8, 9, 9, 9, 9 };
-        static const int8_t dropNewUp[10] = {  8,  7,  6,  4,  2, 0, -1, 0, 0, 0 };
-        static const int8_t dropOldUp[10] = {  0, -1, -2, -4, -6, -8, -9, -9, -9, -9 };
-        uint8_t i = f < 10 ? f : 9;
-        int8_t newDy = (settings.scrollDir == 0) ? dropNewDn[i] : dropNewUp[i];
-        int8_t oldDy = (settings.scrollDir == 0) ? dropOldDn[i] : dropOldUp[i];
-        glyphRows((uint8_t) (48 + a.oldVal), small, 0, oldDy, oldRows);
-        glyphRows((uint8_t) (48 + a.newVal), small, 0, newDy, newRows);
-        for (uint8_t y = 0; y < 8; y++) out[y] = oldRows[y] | newRows[y];
+        if (f <= 4) {
+            static const int8_t dropNewDn[5] = { -8, -7, -6, -4, -2 };
+            static const int8_t dropOldDn[5] = {  0,  1,  2,  4,  6 };
+            static const int8_t dropNewUp[5] = {  8,  7,  6,  4,  2 };
+            static const int8_t dropOldUp[5] = {  0, -1, -2, -4, -6 };
+            int8_t newDy = (settings.scrollDir == 0) ? dropNewDn[f] : dropNewUp[f];
+            int8_t oldDy = (settings.scrollDir == 0) ? dropOldDn[f] : dropOldUp[f];
+            glyphRows((uint8_t) (48 + a.oldVal), small, 0, oldDy, oldRows);
+            glyphRows((uint8_t) (48 + a.newVal), small, 0, newDy, newRows);
+            for (uint8_t y = 0; y < 8; y++) out[y] = oldRows[y] | newRows[y];
+        } else if (f == 5) {
+            scaleRowsVertical(newRows, 6, out);   // impact squash
+        } else if (f == 6) {
+            scaleRowsVertical(newRows, 7, out);   // rebound
+        } else {
+            for (uint8_t y = 0; y < 8; y++) out[y] = newRows[y];
+        }
     } else {
         for (uint8_t y = 0; y < 8; y++) out[y] = newRows[y];
     }
@@ -3840,22 +3896,24 @@ void drawColon(int baseX)   // separator; baseX is the same position char2Arr(':
 void drawDate(int posX)
 {
     drawIcon(ICON_CALENDAR, posX + 8, 0);   // calendar leads the date
-    char2Arr(' ', posX + 5, 0);        //day of the week
-    char2Arr(WT_arr[MEZ.WT][0], posX - 1, 0);
-    char2Arr(WT_arr[MEZ.WT][1], posX - 7, 0);
-    char2Arr(WT_arr[MEZ.WT][2], posX - 13, 0);
-    char2Arr(WT_arr[MEZ.WT][3], posX - 19, 0);
-    char2Arr(48 + MEZ.tag2, posX - 24, 0);           //day
-    char2Arr(48 + MEZ.tag1, posX - 30, 0);
-    char2Arr(M_arr[MEZ.mon12 - 1][0], posX - 39, 0); //month
-    char2Arr(M_arr[MEZ.mon12 - 1][1], posX - 43, 0);
-    char2Arr(M_arr[MEZ.mon12 - 1][2], posX - 49, 0);
-    char2Arr(M_arr[MEZ.mon12 - 1][3], posX - 55, 0);
-    char2Arr(M_arr[MEZ.mon12 - 1][4], posX - 61, 0);
-    char2Arr('2', posX - 68, 0);                     //year
-    char2Arr('0', posX - 74, 0);
-    char2Arr(48 + MEZ.jahr2, posX - 80, 0);
-    char2Arr(48 + MEZ.jahr1, posX - 86, 0);
+    // Date text starts two columns further right so the icon keeps the same
+    // 4 px gap as inline message icons.
+    char2Arr(' ', posX + 3, 0);        //day of the week
+    char2Arr(WT_arr[MEZ.WT][0], posX - 3, 0);
+    char2Arr(WT_arr[MEZ.WT][1], posX - 9, 0);
+    char2Arr(WT_arr[MEZ.WT][2], posX - 15, 0);
+    char2Arr(WT_arr[MEZ.WT][3], posX - 21, 0);
+    char2Arr(48 + MEZ.tag2, posX - 26, 0);           //day
+    char2Arr(48 + MEZ.tag1, posX - 32, 0);
+    char2Arr(M_arr[MEZ.mon12 - 1][0], posX - 41, 0); //month
+    char2Arr(M_arr[MEZ.mon12 - 1][1], posX - 45, 0);
+    char2Arr(M_arr[MEZ.mon12 - 1][2], posX - 51, 0);
+    char2Arr(M_arr[MEZ.mon12 - 1][3], posX - 57, 0);
+    char2Arr(M_arr[MEZ.mon12 - 1][4], posX - 63, 0);
+    char2Arr('2', posX - 70, 0);                     //year
+    char2Arr('0', posX - 76, 0);
+    char2Arr(48 + MEZ.jahr2, posX - 82, 0);
+    char2Arr(48 + MEZ.jahr1, posX - 88, 0);
 }
 
 void serviceClockDisplayDuringWeb()
