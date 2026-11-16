@@ -38,7 +38,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.33"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.35"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -930,6 +930,7 @@ String birthdayDateStr(const BirthdayEntry& b)
 //**************************************************************************************************
 //***************************Web Settings Page**********************************************************************
 ESP8266WebServer server(80);
+volatile bool webServerActive = false;   // guards against re-entering handleClient() from a yield callback
 unsigned long otaRebootAt = 0;          // >0 while waiting to reboot after a successful update
 bool otaUploadStarted = false;
 bool otaUploadSuccess = false;
@@ -2243,20 +2244,25 @@ bool httpGet(const String& url, String& out)   // plain-HTTP GET (Open-Meteo sup
     HTTPClient http;
     if (!http.begin(client, url)) return false;
     http.setTimeout(4000);   // don't let a stalled weather/geocode request block the web UI forever
-    // HTTPClient yields inside its socket waits; keep the clock display and
-    // watchdog heartbeat running whenever it yields.
-    static bool active = false;
-    active = true;
-    schedule_recurrent_function_us([]() {
-        if (!active) return false;
+    // HTTPClient yields inside its socket waits; keep the clock display, the
+    // web server and the watchdog heartbeat running whenever it yields.
+    static uint16_t fetchSeq = 0;
+    uint16_t seq = ++fetchSeq;
+    schedule_recurrent_function_us([seq]() {
+        if (seq != fetchSeq) return false;
         loopHeartbeatMs = millis();
         serviceClockDisplayDuringWeb();
+        if (!webServerActive && !otaUploadInProgress && otaRebootAt == 0 && !Update.isRunning()) {
+            webServerActive = true;
+            server.handleClient();
+            webServerActive = false;
+        }
         return true;
     }, 100000);
     int code = http.GET();
-    if (code != 200) { active = false; http.end(); return false; }
+    if (code != 200) { ++fetchSeq; http.end(); return false; }
     out = http.getString();
-    active = false;
+    ++fetchSeq;
     http.end();
     loopHeartbeatMs = millis();
     serviceClockDisplayDuringWeb();
@@ -3137,7 +3143,9 @@ tm* connectNTP() { // if response from NTP was successful return *tm else return
     while (millis() - t1 < 3000UL)      // wait up to 3s for a reply, keep the web server responsive while waiting
     {
         yield();
+        webServerActive = true;
         server.handleClient();
+        webServerActive = false;
         if (apActive) dnsServer.processNextRequest();
         cb = udp.parsePacket();
         if (cb > 0) break;
@@ -3635,8 +3643,8 @@ uint8_t digitAnimFrames(uint8_t mode)   // number of 50 ms frames for one transi
     switch (mode) {
         case DIGIT_ANIM_ROLL: return 11;  // 550 ms, roll with a landing squash
         case DIGIT_ANIM_FLIP: return 10;  // 500 ms, card flip around the digit centre
-        case DIGIT_ANIM_WIPE: return 10;  // 500 ms, soft dithered wipe edge
-        case DIGIT_ANIM_FADE: return 12;  // 600 ms, fade out then fade in
+        case DIGIT_ANIM_WIPE: return 10;  // 500 ms, two-row soft wipe edge
+        case DIGIT_ANIM_FADE: return 11;  // 550 ms, fade fully out then in
         case DIGIT_ANIM_DROP: return 10;  // 500 ms, drop with a landing squash
         default: return 1;
     }
@@ -3773,39 +3781,37 @@ void drawDigitTransition(uint8_t idx, int baseX, bool small)
         else
             for (uint8_t y = 0; y < 8; y++) out[y] = 0;
     } else if (mode == DIGIT_ANIM_WIPE) {
-        // Soft wipe: the boundary row is dithered, so rows cross over gradually
-        // instead of switching in one hard step.
-        uint16_t pos = (uint16_t) p * 8;
-        uint8_t edge = (uint8_t) (pos >> 8);
-        uint8_t frac = (uint8_t) (pos & 0xFF);
+        // Two-row soft wipe: the boundary is a dithered gradient spanning two
+        // rows, so the old and new glyphs blend instead of switching abruptly.
+        uint16_t pos = (uint16_t) p * 9;   // 0..2304 covers 8 rows plus the band
         bool topDown = (settings.scrollDir == 0);
         for (uint8_t y = 0; y < 8; y++) {
             uint8_t ry = topDown ? y : (uint8_t) (7 - y);
-            if (ry < edge)
-                out[y] = newRows[y];
-            else if (ry > edge)
-                out[y] = oldRows[y];
-            else {
-                uint8_t row = 0;
-                for (uint8_t c = 0; c < 8; c++) {
-                    uint8_t bv = digitDither4[y & 3][c & 3];
-                    bool useNew = frac > (uint16_t) bv * 16;
-                    row |= (useNew ? newRows[y] : oldRows[y]) & (1 << c);
-                }
-                out[y] = row;
+            int d = (int) pos - ((int) ry + 1) * 256;
+            int level = (d + 256) / 32;
+            if (level < 0) level = 0;
+            if (level > 16) level = 16;
+            uint8_t row = oldRows[y] & newRows[y];   // pixels in both digits stay lit
+            for (uint8_t c = 0; c < 8; c++) {
+                uint8_t bv = digitDither4[y & 3][c & 3];
+                if ((int) bv < level)
+                    row |= newRows[y] & (1 << c);
+                else
+                    row |= oldRows[y] & (1 << c);
             }
+            out[y] = row;
         }
     } else if (mode == DIGIT_ANIM_FADE) {
-        // Fade the old digit out, then the new one in. A 4x4 ordered dither
-        // gives finer steps than the old 8x8 crossfade, and pixels shared by
-        // both digits stay lit so the shape does not flicker at the midpoint.
-        uint8_t half = a.total / 2;                 // 6 frames at 12 total
-        bool fadingIn = (f >= half - 1);
+        // Fade the old digit fully out, then the new one in. A 4x4 ordered
+        // dither gives fine steps, and pixels shared by both digits stay lit
+        // so the shape does not flicker at the midpoint.
+        uint8_t half = a.total / 2;                 // 5 frames at 11 total
+        bool fadingIn = (f >= half);
         uint8_t level;
         if (!fadingIn)
-            level = (uint8_t) ((uint16_t) f * 16 / (half - 1));                  // 0..12
+            level = (uint8_t) ((uint16_t) f * 16 / (half - 1));                  // 0..16
         else
-            level = (uint8_t) ((uint16_t) (f - (half - 1)) * 16 / (a.total - half));   // 0..16
+            level = (uint8_t) ((uint16_t) (f - half) * 16 / (a.total - half - 1));   // 0..16
         for (uint8_t y = 0; y < 8; y++) {
             uint8_t row = oldRows[y] & newRows[y];   // pixels in both digits stay lit
             for (uint8_t c = 0; c < 8; c++) {
@@ -4993,7 +4999,9 @@ void loop() {
         loopHeartbeatMs = millis();
         yield();  // on the ESP8266, if the loop must run long operations (e.g. floating point math), call yield regularly so the 8266 keeps running in the background without rebooting or dropping the network.
         handleSerialCommand();
+        webServerActive = true;
         server.handleClient();   // handle web settings page requests
+        webServerActive = false;
         if (apActive) dnsServer.processNextRequest();   // captive-portal lookups
         if (otaRebootAt != 0 && (long) (millis() - otaRebootAt) >= 0)
         {
