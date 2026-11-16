@@ -26,6 +26,7 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPClient.h>
 #include <DNSServer.h>
+#include <Schedule.h>
 #include <stdarg.h>
 #include "WebPage.h"
 #include "WebCss.h"
@@ -37,7 +38,7 @@
 #define CS         15     // Pin cs  (SPI)
 #define anzMAX     4        // number of dot matrix modules
 #define WIFI_CHECK_INTERVAL 30  // seconds between WiFi status checks
-#define FIRMWARE_VERSION "v5.7.28"   // shown on the settings page
+#define FIRMWARE_VERSION "v5.7.33"   // shown on the settings page
 
 // Display-change transition animations.
 enum {
@@ -475,104 +476,18 @@ unsigned short const font1[96][9] = { { 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
         { 0x07, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x00 }    // 0x7f, DEL
 };
 
-// Font 5x8 in an 8x8 matrix, 0,0 is top right
-unsigned short const font2[96][9] = { { 0x07, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00 },   // 0x20, Space
-        { 0x07, 0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04, 0x00 },   // 0x21, !
-        { 0x07, 0x09, 0x09, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00 },   // 0x22, "
-        { 0x07, 0x0a, 0x0a, 0x1f, 0x0a, 0x1f, 0x0a, 0x0a, 0x00 },   // 0x23, #
-        { 0x07, 0x04, 0x0f, 0x14, 0x0e, 0x05, 0x1e, 0x04, 0x00 },   // 0x24, $
-        { 0x07, 0x19, 0x19, 0x02, 0x04, 0x08, 0x13, 0x13, 0x00 },   // 0x25, %
-        { 0x07, 0x04, 0x0a, 0x0a, 0x0a, 0x15, 0x12, 0x0d, 0x00 },   // 0x26, &
-        { 0x07, 0x04, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00 },   // 0x27, '
-        { 0x07, 0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02, 0x00 },   // 0x28, (
-        { 0x07, 0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08, 0x00 },   // 0x29, )
-        { 0x07, 0x04, 0x15, 0x0e, 0x1f, 0x0e, 0x15, 0x04, 0x00 },   // 0x2a, *
-        { 0x07, 0x00, 0x04, 0x04, 0x1f, 0x04, 0x04, 0x00, 0x00 },   // 0x2b, +
-        { 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x02 },   // 0x2c, ,
-        { 0x07, 0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00, 0x00 },   // 0x2d, -
-        { 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x03, 0x00 },   // 0x2e, .
-        { 0x07, 0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10, 0x00 },   // 0x2f, /
-        { 0x07, 0x00, 0x00, 0x07, 0x05, 0x05, 0x05, 0x07, 0x00 },   // 0x30, 0
-        { 0x07, 0x00, 0x00, 0x02, 0x02, 0x02, 0x02, 0x02, 0x00 },   // 0x31, 1
-        { 0x07, 0x00, 0x00, 0x07, 0x01, 0x07, 0x04, 0x07, 0x00 },   // 0x32, 2
-        { 0x07, 0x00, 0x00, 0x07, 0x01, 0x07, 0x01, 0x07, 0x00 },   // 0x33, 3
-        { 0x07, 0x00, 0x00, 0x05, 0x05, 0x07, 0x01, 0x01, 0x00 },   // 0x34, 4
-        { 0x07, 0x00, 0x00, 0x07, 0x04, 0x07, 0x01, 0x07, 0x00 },   // 0x35, 5
-        { 0x07, 0x00, 0x00, 0x07, 0x04, 0x07, 0x05, 0x07, 0x00 },   // 0x36, 6
-        { 0x07, 0x00, 0x00, 0x07, 0x01, 0x01, 0x01, 0x01, 0x00 },   // 0x37, 7
-        { 0x07, 0x00, 0x00, 0x07, 0x05, 0x07, 0x05, 0x07, 0x00 },   // 0x38, 8
-        { 0x07, 0x00, 0x00, 0x07, 0x05, 0x07, 0x01, 0x07, 0x00 },   // 0x39, 9
-        { 0x04, 0x00, 0x03, 0x03, 0x00, 0x03, 0x03, 0x00, 0x00 },   // 0x3a, :
-        { 0x07, 0x00, 0x0c, 0x0c, 0x00, 0x0c, 0x04, 0x08, 0x00 },   // 0x3b, ;
-        { 0x07, 0x02, 0x04, 0x08, 0x10, 0x08, 0x04, 0x02, 0x00 },   // 0x3c, <
-        { 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },   // 0x3d, =
-        { 0x07, 0x08, 0x04, 0x02, 0x01, 0x02, 0x04, 0x08, 0x00 },   // 0x3e, >
-        { 0x07, 0x0e, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04, 0x00 },   // 0x3f, ?
-        { 0x07, 0x0e, 0x11, 0x17, 0x15, 0x17, 0x10, 0x0f, 0x00 },   // 0x40, @
-        { 0x07, 0x04, 0x0a, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x00 },   // 0x41, A
-        { 0x07, 0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e, 0x00 },   // 0x42, B
-        { 0x07, 0x0e, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0e, 0x00 },   // 0x43, C
-        { 0x07, 0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E, 0x00 },   // 0x44, D
-        { 0x07, 0x1f, 0x10, 0x10, 0x1c, 0x10, 0x10, 0x1f, 0x00 },   // 0x45, E
-        { 0x07, 0x1f, 0x10, 0x10, 0x1f, 0x10, 0x10, 0x10, 0x00 },   // 0x46, F
-        { 0x07, 0x0e, 0x11, 0x10, 0x10, 0x13, 0x11, 0x0f, 0x00 },   // 0x37, G
-        { 0x07, 0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11, 0x00 },   // 0x48, H
-        { 0x07, 0x0e, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0e, 0x00 },   // 0x49, I
-        { 0x07, 0x1f, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0c, 0x00 },   // 0x4a, J
-        { 0x07, 0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11, 0x00 },   // 0x4b, K
-        { 0x07, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f, 0x00 },   // 0x4c, L
-        { 0x07, 0x11, 0x1b, 0x15, 0x11, 0x11, 0x11, 0x11, 0x00 },   // 0x4d, M
-        { 0x07, 0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x00 },   // 0x4e, N
-        { 0x07, 0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e, 0x00 },   // 0x4f, O
-        { 0x07, 0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10, 0x00 },   // 0x50, P
-        { 0x07, 0x0e, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0d, 0x00 },   // 0x51, Q
-        { 0x07, 0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11, 0x00 },   // 0x52, R
-        { 0x07, 0x0e, 0x11, 0x10, 0x0e, 0x01, 0x11, 0x0e, 0x00 },   // 0x53, S
-        { 0x07, 0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x00 },   // 0x54, T
-        { 0x07, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e, 0x00 },   // 0x55, U
-        { 0x07, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0a, 0x04, 0x00 },   // 0x56, V
-        { 0x07, 0x11, 0x11, 0x11, 0x15, 0x15, 0x1b, 0x11, 0x00 },   // 0x57, W
-        { 0x07, 0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11, 0x00 },   // 0x58, X
-        { 0x07, 0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04, 0x00 },   // 0x59, Y
-        { 0x07, 0x1f, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1f, 0x00 },   // 0x5a, Z
-        { 0x07, 0x0e, 0x08, 0x08, 0x08, 0x08, 0x08, 0x0e, 0x00 },   // 0x5b, [
-        { 0x07, 0x10, 0x10, 0x08, 0x04, 0x02, 0x01, 0x01, 0x00 },   // 0x5c, '\'
-        { 0x07, 0x0e, 0x02, 0x02, 0x02, 0x02, 0x02, 0x0e, 0x00 },   // 0x5d, ]
-        { 0x07, 0x04, 0x0a, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00 },   // 0x5e, ^
-        { 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1f, 0x00 },   // 0x5f, _
-        { 0x07, 0x04, 0x04, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00 },   // 0x60, `
-        { 0x07, 0x00, 0x0e, 0x01, 0x0d, 0x13, 0x13, 0x0d, 0x00 },   // 0x61, a
-        { 0x07, 0x10, 0x10, 0x10, 0x1c, 0x12, 0x12, 0x1c, 0x00 },   // 0x62, b
-        { 0x07, 0x00, 0x00, 0x0E, 0x10, 0x10, 0x10, 0x0E, 0x00 },   // 0x63, c
-        { 0x07, 0x01, 0x01, 0x01, 0x07, 0x09, 0x09, 0x07, 0x00 },   // 0x64, d
-        { 0x07, 0x00, 0x00, 0x0e, 0x11, 0x1f, 0x10, 0x0f, 0x00 },   // 0x65, e
-        { 0x07, 0x06, 0x09, 0x08, 0x1c, 0x08, 0x08, 0x08, 0x00 },   // 0x66, f
-        { 0x07, 0x00, 0x0e, 0x11, 0x13, 0x0d, 0x01, 0x01, 0x0e },   // 0x67, g
-        { 0x07, 0x10, 0x10, 0x10, 0x16, 0x19, 0x11, 0x11, 0x00 },   // 0x68, h
-        { 0x05, 0x00, 0x02, 0x00, 0x06, 0x02, 0x02, 0x07, 0x00 },   // 0x69, i
-        { 0x07, 0x00, 0x02, 0x00, 0x06, 0x02, 0x02, 0x12, 0x0c },   // 0x6a, j
-        { 0x07, 0x10, 0x10, 0x12, 0x14, 0x18, 0x14, 0x12, 0x00 },   // 0x6b, k
-        { 0x05, 0x06, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x00 },   // 0x6c, l
-        { 0x07, 0x00, 0x00, 0x0a, 0x15, 0x15, 0x11, 0x11, 0x00 },   // 0x6d, m
-        { 0x07, 0x00, 0x00, 0x16, 0x19, 0x11, 0x11, 0x11, 0x00 },   // 0x6e, n
-        { 0x07, 0x00, 0x00, 0x0e, 0x11, 0x11, 0x11, 0x0e, 0x00 },   // 0x6f, o
-        { 0x07, 0x00, 0x00, 0x1c, 0x12, 0x12, 0x1c, 0x10, 0x10 },   // 0x70, p
-        { 0x07, 0x00, 0x00, 0x07, 0x09, 0x09, 0x07, 0x01, 0x01 },   // 0x71, q
-        { 0x07, 0x00, 0x00, 0x16, 0x19, 0x10, 0x10, 0x10, 0x00 },   // 0x72, r
-        { 0x07, 0x00, 0x00, 0x0f, 0x10, 0x0e, 0x01, 0x1e, 0x00 },   // 0x73, s
-        { 0x07, 0x08, 0x08, 0x1c, 0x08, 0x08, 0x09, 0x06, 0x00 },   // 0x74, t
-        { 0x07, 0x00, 0x00, 0x11, 0x11, 0x11, 0x13, 0x0d, 0x00 },   // 0x75, u
-        { 0x07, 0x00, 0x00, 0x11, 0x11, 0x11, 0x0a, 0x04, 0x00 },   // 0x76, v
-        { 0x07, 0x00, 0x00, 0x11, 0x11, 0x15, 0x15, 0x0a, 0x00 },   // 0x77, w
-        { 0x07, 0x00, 0x00, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x00 },   // 0x78, x
-        { 0x07, 0x00, 0x00, 0x11, 0x11, 0x0f, 0x01, 0x11, 0x0e },   // 0x79, y
-        { 0x07, 0x00, 0x00, 0x1f, 0x02, 0x04, 0x08, 0x1f, 0x00 },   // 0x7a, z
-        { 0x07, 0x06, 0x08, 0x08, 0x10, 0x08, 0x08, 0x06, 0x00 },   // 0x7b, {
-        { 0x07, 0x04, 0x04, 0x04, 0x00, 0x04, 0x04, 0x04, 0x00 },   // 0x7c, |
-        { 0x07, 0x0c, 0x02, 0x02, 0x01, 0x02, 0x02, 0x0c, 0x00 },   // 0x7d, }
-        { 0x07, 0x08, 0x15, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00 },   // 0x7e, ~
-        { 0x07, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x00 }    // 0x7f, DEL
+// Small 3x5 digits for the seconds display (0x30..0x39).
+unsigned short const font2Digits[10][9] = {
+        { 0x07, 0x00, 0x00, 0x07, 0x05, 0x05, 0x05, 0x07, 0x00 },   // 0
+        { 0x07, 0x00, 0x00, 0x02, 0x02, 0x02, 0x02, 0x02, 0x00 },   // 1
+        { 0x07, 0x00, 0x00, 0x07, 0x01, 0x07, 0x04, 0x07, 0x00 },   // 2
+        { 0x07, 0x00, 0x00, 0x07, 0x01, 0x07, 0x01, 0x07, 0x00 },   // 3
+        { 0x07, 0x00, 0x00, 0x05, 0x05, 0x07, 0x01, 0x01, 0x00 },   // 4
+        { 0x07, 0x00, 0x00, 0x07, 0x04, 0x07, 0x01, 0x07, 0x00 },   // 5
+        { 0x07, 0x00, 0x00, 0x07, 0x04, 0x07, 0x05, 0x07, 0x00 },   // 6
+        { 0x07, 0x00, 0x00, 0x07, 0x01, 0x01, 0x01, 0x01, 0x00 },   // 7
+        { 0x07, 0x00, 0x00, 0x07, 0x05, 0x07, 0x05, 0x07, 0x00 },   // 8
+        { 0x07, 0x00, 0x00, 0x07, 0x05, 0x07, 0x01, 0x07, 0x00 }    // 9
 };
 
 //************************Message Icons*****************************************************************************
@@ -922,6 +837,13 @@ void settings_load()
         repaired = true;
     }
     settings.apPass[sizeof(settings.apPass) - 1] = 0;
+    for (unsigned i = 0; i < sizeof(settings.apPass); i++)
+        if ((unsigned char) settings.apPass[i] > 0x7E)
+        {
+            settings.apPass[i] = '\0';
+            repaired = true;
+            break;
+        }
     if (strlen(settings.apPass) < 8)
     {
         strncpy(settings.apPass, "12345678", sizeof(settings.apPass) - 1);
@@ -957,6 +879,15 @@ void settings_load()
             repaired = true;
             break;
         }
+    settings.ssid[sizeof(settings.ssid) - 1] = '\0';
+    for (unsigned i = 0; i < sizeof(settings.ssid); i++)
+        if ((unsigned char) settings.ssid[i] > 0x7E) { settings.ssid[i] = '\0'; repaired = true; break; }
+    settings.pass[sizeof(settings.pass) - 1] = '\0';
+    for (unsigned i = 0; i < sizeof(settings.pass); i++)
+        if ((unsigned char) settings.pass[i] > 0x7E) { settings.pass[i] = '\0'; repaired = true; break; }
+    settings.ntpServer[sizeof(settings.ntpServer) - 1] = '\0';
+    for (unsigned i = 0; i < sizeof(settings.ntpServer); i++)
+        if ((unsigned char) settings.ntpServer[i] > 0x7E) { settings.ntpServer[i] = '\0'; repaired = true; break; }
     if (repaired)
         settings_save();   // persist the corrected fields so they don't need repairing on every boot
 }
@@ -974,10 +905,10 @@ bool parseBirthdayDate(const String& s, uint8_t& day, uint8_t& month, uint16_t& 
     }
     int p1 = t.indexOf('/');
     int p2 = (p1 >= 0) ? t.indexOf('/', p1 + 1) : -1;
-    if (p1 < 0 || p2 < 0) return false;
+    if (p1 < 0) return false;
     int d = t.substring(0, p1).toInt();
-    int m = t.substring(p1 + 1, p2).toInt();
-    int y = t.substring(p2 + 1).toInt();
+    int m = (p2 >= 0) ? t.substring(p1 + 1, p2).toInt() : t.substring(p1 + 1).toInt();
+    int y = (p2 >= 0) ? t.substring(p2 + 1).toInt() : 0;
     if (d < 1 || d > 31 || m < 1 || m > 12) return false;
     if (y != 0 && (y < 1900 || y > 2100)) return false;
     day = (uint8_t) d;
@@ -1198,6 +1129,19 @@ String htmlEscape(const char* s)   // escape special chars so saved values can't
         else out += *p;
     }
     return out;
+}
+
+void sanitizeDisplayText(char* s, size_t size)
+    // The LED font is ASCII; bytes above 0x7E would also collide with the
+    // message-icon markers (0x80..0x97). Truncate at the first non-ASCII byte.
+{
+    for (size_t i = 0; i < size; i++) {
+        if (s[i] == 0) break;
+        if ((unsigned char) s[i] > 0x7E) {
+            s[i] = 0;
+            break;
+        }
+    }
 }
 //**************************************************************************************************
 String jsonEsc(const char* s)   // escape special chars so saved values can't break the /v JSON
@@ -1517,7 +1461,8 @@ void handleWeatherPage()
             ".yes{color:var(--accent)}.no{color:var(--sub)}.warn{color:#e05252}.ok{color:var(--accent)}.big{font-size:16px}"
             ".note{font-size:12px;line-height:1.6;color:var(--sub);margin:16px 0}.note a{color:var(--accent);text-decoration:none}"
             "</style></head><body><div class=wrap><h1>Clock Details</h1><h2>Rain / Weather</h2><div class=city>";
-    page += settings.weatherCity[0] ? settings.weatherCity : "No weather city configured";
+    if (settings.weatherCity[0]) page += htmlEscape(settings.weatherCity);
+    else page += "No weather city configured";
     page += "</div><table>";
     if (settings.weatherCity[0] == 0)
         page += "<tr><td>Status</td><td class=no>No weather city configured</td></tr>";
@@ -1601,7 +1546,8 @@ void handleWeatherPage()
     page += "</div>";
     page += "<h2>NTP</h2><table>";
     page += "<tr><td>Server</td><td>";
-    page += settings.ntpServer[0] ? settings.ntpServer : "not set";
+    if (settings.ntpServer[0]) page += htmlEscape(settings.ntpServer);
+    else page += "not set";
     page += "</td></tr>";
     if (ntpLastSyncMs != 0)
     {
@@ -1645,8 +1591,10 @@ void handleWeatherPage()
     page += String(heapMin == 0xFFFFFFFF ? ESP.getFreeHeap() : heapMin);
     page += " B</td></tr>";
     page += "<tr><td>WiFi RSSI / reconnects</td><td>";
-    page += String(WiFi.RSSI());
-    page += " dBm / ";
+    if (apActive) page += "AP";
+    else if (WiFi.status() == WL_CONNECTED) { page += String(WiFi.RSSI()); page += " dBm"; }
+    else page += "offline";
+    page += " / ";
     page += String(wifiReconnectCount);
     page += "</td></tr>";
     page += "<tr><td>Reset reason</td><td>";
@@ -1683,6 +1631,7 @@ void handleStatus()
     j += ",\"heapMin\":" + String(heapMin == 0xFFFFFFFF ? ESP.getFreeHeap() : heapMin);
     j += ",\"rssi\":" + String(WiFi.RSSI());
     j += ",\"wifi\":" + String((int) WiFi.status());
+    j += ",\"ap\":" + String(apActive ? 1 : 0);
     j += ",\"wifiReconnects\":" + String(wifiReconnectCount);
     j += ",\"uptime\":" + String(millis() / 1000UL);
     j += ",\"reset\":\"" + jsonEsc(ESP.getResetReason().c_str()) + "\"";
@@ -1810,7 +1759,7 @@ void handleTestAnimation()
     if (server.hasArg("type"))
     {
         int v = server.arg("type").toInt();
-        if (v >= 0 && v <= TRANSITION_RANDOM)
+        if (v >= 0 && v <= TRANSITION_RANDOM && v != TRANSITION_BREAKOUT)
             type = (uint8_t) v;
     }
     if (!msgEatActive)
@@ -1847,12 +1796,20 @@ void handleSave()
         String ap = server.arg("apPass");
         if (ap.length() >= 8 && ap.length() <= 63)   // blank or too short = keep the current AP password
         {
-            strncpy(settings.apPass, ap.c_str(), sizeof(settings.apPass) - 1);
-            settings.apPass[sizeof(settings.apPass) - 1] = '\0';
+            char tmp[sizeof(settings.apPass)];
+            strncpy(tmp, ap.c_str(), sizeof(tmp) - 1);
+            tmp[sizeof(tmp) - 1] = '\0';
+            sanitizeDisplayText(tmp, sizeof(tmp));
+            if (strlen(tmp) >= 8)
+            {
+                strncpy(settings.apPass, tmp, sizeof(settings.apPass) - 1);
+                settings.apPass[sizeof(settings.apPass) - 1] = '\0';
+            }
         }
     }
     strncpy(settings.ntpServer, server.arg("ntp").c_str(), sizeof(settings.ntpServer) - 1);
     settings.ntpServer[sizeof(settings.ntpServer) - 1] = '\0';
+    sanitizeDisplayText(settings.ntpServer, sizeof(settings.ntpServer));
     settings.tzOffset = (int8_t) constrain(server.arg("tz").toInt(), -12, 14);
     settings.brightness = (uint8_t) constrain(server.arg("bright").toInt(), 0, 15);
     settings.orient = (uint8_t) constrain(server.arg("orient").toInt(), 1, 2);
@@ -1870,7 +1827,12 @@ void handleSave()
         settings.textEffect = fx;
     }
     settings.textFxFormat = 0xEFF5;
-    if (server.hasArg("displayTransition")) settings.displayTransition = (uint8_t) constrain(server.arg("displayTransition").toInt(), 0, TRANSITION_RANDOM);
+    if (server.hasArg("displayTransition"))
+    {
+        uint8_t dt = (uint8_t) constrain(server.arg("displayTransition").toInt(), 0, (int) TRANSITION_RANDOM);
+        if (dt == TRANSITION_BREAKOUT) dt = TRANSITION_SPACE;   // Breakout was removed
+        settings.displayTransition = dt;
+    }
     settings.transitionFormat = 0xD158;
     settings.resync = (uint8_t) (server.arg("resync").toInt() ? 1 : 0);
     settings.resyncHour = (uint8_t) constrain(server.arg("resyncHour").toInt(), 0, 23);
@@ -1879,6 +1841,7 @@ void handleSave()
     settings.weather = (uint8_t) (server.arg("weather").toInt() ? 1 : 0);
     strncpy(settings.weatherCity, server.arg("weatherCity").c_str(), sizeof(settings.weatherCity) - 1);
     settings.weatherCity[sizeof(settings.weatherCity) - 1] = '\0';
+    sanitizeDisplayText(settings.weatherCity, sizeof(settings.weatherCity));
     settings.weatherCityShow = (uint8_t) (server.arg("weatherCityShow").toInt() ? 1 : 0);
     settings.weatherInterval = (uint16_t) constrain(server.arg("weatherInterval").toInt(), 1, 240);
     settings.weatherSpeed = (uint8_t) constrain(server.arg("weatherSpeed").toInt(), 1, 3);
@@ -1944,6 +1907,7 @@ void handleSave()
         {
             strncpy(settings.birthdays[i].name, name.c_str(), sizeof(settings.birthdays[i].name) - 1);
             settings.birthdays[i].name[sizeof(settings.birthdays[i].name) - 1] = 0;
+            sanitizeDisplayText(settings.birthdays[i].name, sizeof(settings.birthdays[i].name));
             settings.birthdays[i].day = d;
             settings.birthdays[i].month = m;
             settings.birthdays[i].year = y;
@@ -2221,7 +2185,7 @@ void handleUpdateDone()
         alertAnimActive = false;
         apMsgUntil = 0;
         startMsgNowIcon(ICON_DOWNLOAD, "UPDATE SUCCESSFUL", 2, false);
-        otaRebootAt = millis() + 8000UL;
+        otaRebootAt = millis() + 10000UL;   // success + a full "Rebooting..." scroll
         server.keepAlive(false);
         server.send(200, "application/json",
                     "{\"ok\":true,\"msg\":\"Firmware updated successfully. Rebooting...\"}");
@@ -2279,10 +2243,23 @@ bool httpGet(const String& url, String& out)   // plain-HTTP GET (Open-Meteo sup
     HTTPClient http;
     if (!http.begin(client, url)) return false;
     http.setTimeout(4000);   // don't let a stalled weather/geocode request block the web UI forever
+    // HTTPClient yields inside its socket waits; keep the clock display and
+    // watchdog heartbeat running whenever it yields.
+    static bool active = false;
+    active = true;
+    schedule_recurrent_function_us([]() {
+        if (!active) return false;
+        loopHeartbeatMs = millis();
+        serviceClockDisplayDuringWeb();
+        return true;
+    }, 100000);
     int code = http.GET();
-    if (code != 200) { http.end(); return false; }
+    if (code != 200) { active = false; http.end(); return false; }
     out = http.getString();
+    active = false;
     http.end();
+    loopHeartbeatMs = millis();
+    serviceClockDisplayDuringWeb();
     return true;
 }
 //**************************************************************************************************
@@ -3306,18 +3283,20 @@ void rtc_jahr(unsigned char jahr) {
 }
 //******************************Set RTC********************************************************************
 void rtc_set(tm* tt) {
-    rtc_sekunde((unsigned char) tt->tm_sec);
-    rtc_minute((unsigned char) tt->tm_min);
-    rtc_stunde((unsigned char) tt->tm_hour);
-    rtc_tag((unsigned char) tt->tm_mday);
-    rtc_monat((unsigned char) tt->tm_mon + 1);
-    rtc_jahr((unsigned char) tt->tm_year - 100);
-    if (tt->tm_wday == 0)
-    {
-      rtc_wochentag(7);
-    }
-    else
-    rtc_wochentag((unsigned char) tt->tm_wday);
+    // Write all 7 time registers in a single I2C transaction so the DS3231
+    // updates its internal counters atomically (writing register 00h resets
+    // the sub-second countdown chain).
+    unsigned char wt = (tt->tm_wday == 0) ? 7 : (unsigned char) tt->tm_wday;
+    Wire.beginTransmission(DS3231_ADDRESS);
+    Wire.write(secondREG);
+    Wire.write(dec2bcd((unsigned char) tt->tm_sec));
+    Wire.write(dec2bcd((unsigned char) tt->tm_min));
+    Wire.write(dec2bcd((unsigned char) tt->tm_hour));
+    Wire.write(dec2bcd(wt));
+    Wire.write(dec2bcd((unsigned char) tt->tm_mday));
+    Wire.write(dec2bcd((unsigned char) (tt->tm_mon + 1)));
+    Wire.write(dec2bcd((unsigned char) (tt->tm_year - 100)));
+    Wire.endTransmission();
     rtc_clearOsf();
 }
 //*****************************Get RTC Temperature*********************************************************************
@@ -3356,30 +3335,47 @@ int8_t rtc_aging()
 }
 //**************************************************************************************************
 void rtc2mez() {
- 
     unsigned short Jahr, Tag, Monat, WoTag, Stunde, Minute, Sekunde;
 
-    Jahr = rtc_jahr();//year
+    // Read all 7 time registers in one burst so the DS3231 latches a coherent
+    // snapshot (no :59 -> :00 rollover tear between separate reads).
+    Wire.beginTransmission(DS3231_ADDRESS);
+    Wire.write(secondREG);
+    Wire.endTransmission();
+    if (Wire.requestFrom((unsigned char) DS3231_ADDRESS, (unsigned char) 7) == 7)
+    {
+        Sekunde = bcd2dec(Wire.read() & 0x7F);
+        Minute  = bcd2dec(Wire.read() & 0x7F);
+        Stunde  = bcd2dec(Wire.read() & 0x3F);
+        WoTag   = bcd2dec(Wire.read() & 0x07);
+        Tag     = bcd2dec(Wire.read() & 0x3F);
+        Monat   = bcd2dec(Wire.read() & 0x1F);
+        Jahr    = bcd2dec(Wire.read());
+    }
+    else
+    {
+        Jahr    = rtc_jahr();
+        Monat   = rtc_monat();
+        Tag     = rtc_tag();
+        WoTag   = rtc_wochentag();
+        Stunde  = rtc_stunde();
+        Minute  = rtc_minute();
+        Sekunde = rtc_sekunde();
+    }
     if (Jahr > 99)
         Jahr = 0;
-    Monat = rtc_monat();//month
     if (Monat < 1 || Monat > 12)
         Monat = 1;
-    Tag = rtc_tag();//day
     if (Tag < 1 || Tag > 31)
         Tag = 1;
-    WoTag = rtc_wochentag();
     if (WoTag == 7)
         WoTag = 0;
     if (WoTag > 6)
         WoTag = 0;
-    Stunde = rtc_stunde();//hour
     if (Stunde > 23)
         Stunde = 0;
-    Minute = rtc_minute();//minute
     if (Minute > 59)
         Minute = 0;
-    Sekunde = rtc_sekunde();//second
     if (Sekunde > 59)
         Sekunde = 0;
     
@@ -3673,7 +3669,8 @@ void glyphRows(uint8_t ch, bool small, int8_t dx, int8_t dy, uint8_t rows[8])
     for (uint8_t y = 0; y < 8; y++) rows[y] = 0;
     int k = (int) ch - 32;
     if (k < 0 || k >= 96) return;
-    const unsigned short *f = small ? font2[k] : font1[k];
+    if (small && (ch < '0' || ch > '9')) return;
+    const unsigned short *f = small ? font2Digits[ch - '0'] : font1[k];
     uint8_t w = (uint8_t) f[0];
     if (w < 2) return;
     if (w > 8) w = 8;
@@ -3895,7 +3892,6 @@ void drawColon(int baseX)   // separator; baseX is the same position char2Arr(':
 
 void drawDate(int posX)
 {
-    drawIcon(ICON_CALENDAR, posX + 8, 0);   // calendar leads the date
     // Date text starts two columns further right so the icon keeps the same
     // 4 px gap as inline message icons.
     char2Arr(' ', posX + 3, 0);        //day of the week
@@ -3914,6 +3910,9 @@ void drawDate(int posX)
     char2Arr('0', posX - 76, 0);
     char2Arr(48 + MEZ.jahr2, posX - 82, 0);
     char2Arr(48 + MEZ.jahr1, posX - 88, 0);
+    // Draw the icon last: the leading space cell clears its own columns, and
+    // would otherwise cut the right edge off the calendar.
+    drawIcon(ICON_CALENDAR, posX + 8, 0);
 }
 
 void serviceClockDisplayDuringWeb()
@@ -5363,6 +5362,8 @@ void loop() {
                 {
                     apActive = true;   // router dropped again during the grace period: keep the fallback AP
                     apMsgUntil = millis() + 30000UL;
+                    dnsServer.stop();
+                    dnsServer.start(53, "*", WiFi.softAPIP());   // restore the captive portal too
                     Serial.println("WiFi dropped again, keeping fallback AP");
                 }
             }
@@ -5610,7 +5611,7 @@ void loop() {
                         weatherAlertActive = false;
                     }
                     if (otaRebootAt != 0 && otaUploadSuccess)
-                        startMsgNowIcon(ICON_DOWNLOAD, "UPDATE SUCCESSFUL", 2, false);   // keep showing it until the reboot
+                        startMsgNowIcon(ICON_CLOCK, "Rebooting...", 2, false);   // repeat until the reboot
                     else if (apActive && millis() < apMsgUntil)   // keep repeating the AP setup hint for 30 seconds
                         startMsgIcon(apUpdateMode ? ICON_UPLOAD : ICON_SIGNAL,
                                      apUpdateMode ? "AP UPDATE 192.168.4.1" : "SETUP MODE AP 192.168.4.1");
@@ -5681,7 +5682,7 @@ void loop() {
                 drawDigitCell(4, (uint8_t) std1, z_PosX - 4, false);   // hours ones
                 drawDigitCell(5, (uint8_t) std2, z_PosX + 1, false);   // hours tens
                 if (f_scroll_x)
-                    drawDate(d_PosX);   // the date is only visible while scrolling
+                    drawDate(d_PosX - 4);   // leave a 4 px space between the clock and the date icon
             }
 
             refresh_display(); //alle 50ms
